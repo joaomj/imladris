@@ -129,18 +129,18 @@ uv run x-digest rebuild-silver
 
 ## Local Storage
 
-The default vault is:
+The vault lives in `data/` inside the project root:
 
 ```text
-~/Library/Application Support/x-digest/
+<project-root>/data/
+├── bronze/              # immutable API responses + media
+├── silver.sqlite        # normalized records + FTS5 index
+├── logs/application.jsonl
+└── scheduler-state.json
 ```
 
-The vault contains:
-
-- `bronze/` — immutable compressed API responses and downloaded media.
-- `silver.sqlite` — normalized records and the full-text search index.
-- `logs/application.jsonl` — structured application events.
-- `scheduler-state.json` — the last successful scheduled-sync date.
+The project is fully self-contained. Move the entire directory to
+relocate everything.
 
 Change the vault location with:
 

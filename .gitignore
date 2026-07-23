@@ -59,7 +59,7 @@ venv.bak/
 Thumbs.db
 
 # Project-specific
-vault/
+data/
 logs/
 *.log
 *.sqlite

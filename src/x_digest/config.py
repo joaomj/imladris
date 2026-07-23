@@ -8,14 +8,21 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 DEFAULT_X_SCOPE = "bookmark.read tweet.read users.read offline.access"
 
 
+def _find_project_root() -> Path:
+    """Walk up from this file to find the project root with pyproject.toml."""
+    current = Path(__file__).resolve()
+    for parent in current.parents:
+        if (parent / "pyproject.toml").exists():
+            return parent
+    return Path.cwd()
+
+
 class Settings(BaseSettings):
     """Configuration loaded from environment variables."""
 
     model_config = SettingsConfigDict(env_prefix="XDIGEST_", env_file=".env")
 
-    vault_path: Path = Field(
-        default_factory=lambda: Path.home() / "Library" / "Application Support" / "x-digest"
-    )
+    vault_path: Path = Field(default_factory=lambda: _find_project_root() / "data")
     x_client_id: str | None = None
     x_client_secret: str | None = None
     x_redirect_uri: str = "http://localhost:8080/callback"
