@@ -47,9 +47,6 @@ ENV/
 env.bak/
 venv.bak/
 
-# uv
-uv.lock
-
 # IDE
 .idea/
 .vscode/
@@ -65,3 +62,8 @@ Thumbs.db
 vault/
 logs/
 *.log
+*.sqlite
+*.sqlite-*
+scheduler-state.json
+run.lock
+inspection/

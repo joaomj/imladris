@@ -1,110 +1,174 @@
 # X Digest
 
-A local, private, append-only archive of your X bookmarks. Keep your bookmarked
-posts, long-form Articles, and media safe on your own machine, independent of X
-availability.
+X Digest keeps a private, local copy of your X bookmarks. It reads data from
+the official X API, stores the raw responses and media, and builds a searchable
+SQLite catalog.
 
-## What it does
-
-- Downloads your X bookmarks, including long-form Articles and attached media.
-- Stores raw API responses in an immutable archive that never deletes data.
-- Normalizes posts into a local searchable database.
-- Runs automatically once per day when you log into your Mac.
-- Lets you search, browse, and export your archive from the command line.
-
-## Quick start
-
-WARNING: This project is in planning stage. The steps below show the intended
-workflow. Not all features are implemented.
-
-### Install
-
-```bash
-git clone https://github.com/YOUR_USER/x-digest.git
-cd x-digest
-uv sync
-```
-
-### Authenticate with X
-
-You need an X Developer account and a registered OAuth 2.0 application with
-these scopes:
-
-- `bookmark.read`
-- `tweet.read`
-- `users.read`
-- `offline.access`
-
-Set the redirect URI to `http://localhost:8080/callback`.
-
-Then authorize the CLI:
-
-```bash
-uv run x-digest auth
-```
-
-This opens a browser, asks you to authorize the app, and stores your token
-securely in the macOS Keychain.
-
-### Sync your bookmarks
-
-```bash
-uv run x-digest sync
-```
-
-The first sync fetches all your bookmarked posts and saves them locally. Later
-syncs only add new or changed content.
-
-### Search your archive
-
-```bash
-uv run x-digest search "machine learning"
-uv run x-digest show <post-id>
-```
-
-### Set up daily automatic sync
-
-```bash
-uv run x-digest install-scheduler
-```
-
-This installs a macOS LaunchAgent that runs `sync` when you log in, once per
-day.
-
-## How your data is stored
-
-Everything lives in `~/Library/Application Support/x-digest/`:
-
-- **Bronze** — raw, compressed X API responses and downloaded media files.
-  Never modified or deleted.
-- **Silver** — a SQLite database with normalized post records, authors,
-  folders, and media metadata.
-- **Gold** — full-text search index and Markdown/JSON exports.
-
-Your OAuth token stays in the macOS Keychain. It never appears in files or
-logs.
+This first version does not create posts, generate summaries, or use an LLM.
 
 ## Requirements
 
 - macOS
 - Python 3.11 or newer
-- [uv](https://docs.astral.sh/uv/)
-- X Developer account with a registered OAuth 2.0 application
+- [`uv`](https://docs.astral.sh/uv/)
+- An X Developer application with OAuth 2.0 PKCE enabled
 
-## Commands
+## Install
 
-| Command | Purpose |
-|---------|---------|
-| `auth` | Authorize the app with X |
-| `sync` | Fetch and store new bookmarks |
-| `status` | Show vault statistics |
-| `search <q>` | Full-text search |
-| `show <id>` | Display a single post |
-| `export --format markdown|json` | Export your archive |
-| `verify` | Check vault integrity |
-| `rebuild-silver` | Rebuild database from Bronze |
-| `install-scheduler` | Set up daily automatic sync |
+```bash
+git clone https://github.com/joaomj/x-digest.git
+cd x-digest
+uv sync
+```
 
-## License
+Register this redirect URI in the X Developer application:
 
-Private.
+```text
+http://localhost:8080/callback
+```
+
+Set the client ID in `.env`:
+
+```text
+XDIGEST_X_CLIENT_ID=your-client-id
+```
+
+Use the OAuth 2.0 settings shown in the X Developer Console. Set the app
+permission to read and enable bookmark, post, and user read scopes. Keep the
+client secret in the local `.env` file. Do not commit it or send it in chat.
+
+Set `XDIGEST_X_CLIENT_SECRET` only when the X application requires a client
+secret. The `.env` file stays local and is ignored by Git.
+
+## Authorize X
+
+Run:
+
+```bash
+uv run x-digest auth
+```
+
+Open the printed URL and authorize the application. Copy the complete callback
+URL from the browser address bar and run:
+
+```bash
+uv run x-digest auth --callback-url 'http://localhost:8080/callback?code=...&state=...'
+```
+
+The OAuth token is stored in the macOS Keychain. X Digest does not write an X
+post or modify bookmark state.
+
+## Sync Bookmarks
+
+Run a full bookmark sync:
+
+```bash
+uv run x-digest sync
+```
+
+Limit a test sync to one bookmark page:
+
+```bash
+uv run x-digest sync --max-pages 1
+```
+
+Preview API reads without writing Bronze or Silver content:
+
+```bash
+uv run x-digest sync --max-pages 1 --dry-run
+```
+
+The sync stores raw API pages, folder responses, normalized posts, bookmark
+membership observations, and media download results.
+
+## Inspect Bookmark Samples
+
+After authorization, fetch one bounded bookmark page and exactly one ordinary
+post plus one Article from that page:
+
+```bash
+uv run x-digest probe-bookmarks --max-results 20
+```
+
+The command never paginates through the full bookmark collection. Increase
+`--max-results` only when the first bounded page does not contain an Article.
+
+## Inspect One Post
+
+Use `probe-post` to fetch exactly one post. This command is useful for checking
+the API response shape for one ordinary post or one X Article:
+
+```bash
+uv run x-digest probe-post 'https://x.com/user/status/1234567890'
+```
+
+It does not enumerate bookmarks.
+
+## Search And Export
+
+```bash
+uv run x-digest status
+uv run x-digest search "local archive"
+uv run x-digest show 1234567890
+uv run x-digest export-post 1234567890 --output ./post.md
+uv run x-digest export --format markdown
+uv run x-digest export --format json --output ./bookmarks.json
+```
+
+Verify the archive:
+
+```bash
+uv run x-digest verify --full
+```
+
+Rebuild the normalized database from the immutable raw layer:
+
+```bash
+uv run x-digest rebuild-silver
+```
+
+## Local Storage
+
+The default vault is:
+
+```text
+~/Library/Application Support/x-digest/
+```
+
+The vault contains:
+
+- `bronze/` — immutable compressed API responses and downloaded media.
+- `silver.sqlite` — normalized records and the full-text search index.
+- `logs/application.jsonl` — structured application events.
+- `scheduler-state.json` — the last successful scheduled-sync date.
+
+Change the vault location with:
+
+```text
+XDIGEST_VAULT_PATH=/path/to/vault
+```
+
+Bronze objects are never overwritten or deleted by X Digest.
+
+## Daily Login Sync
+
+Install the per-user macOS LaunchAgent:
+
+```bash
+uv run x-digest install-scheduler
+```
+
+The agent starts at login and checks once per hour. The durable state guard
+allows one successful sync per local calendar day. Network or authentication
+failures remain retriable.
+
+## Scope Boundaries
+
+The current version does not include:
+
+- X write operations.
+- Summaries or LLM processing.
+- X data-export archive import.
+- A web interface.
+- Multiple X accounts.
+- Alternative transports such as browser-cookie clients.
