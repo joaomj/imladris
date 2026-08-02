@@ -208,3 +208,27 @@ class Database:
                 "SELECT value FROM checkpoints WHERE checkpoint_key = ?", (key,)
             ).fetchone()
         return json.loads(row["value"]) if row else None
+
+    def known_post_ids(self, post_ids: list[str]) -> set[str]:
+        """Return the subset of post IDs already present in the posts table."""
+        if not post_ids:
+            return set()
+        placeholders = ",".join("?" * len(post_ids))
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"SELECT post_id FROM posts WHERE post_id IN ({placeholders})", post_ids
+            ).fetchall()
+        return {row["post_id"] for row in rows}
+
+    def complete_post_ids(self, post_ids: list[str]) -> set[str]:
+        """Return the subset of post IDs already archived with complete content."""
+        if not post_ids:
+            return set()
+        placeholders = ",".join("?" * len(post_ids))
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"""SELECT post_id FROM posts
+                    WHERE content_state = 'complete' AND post_id IN ({placeholders})""",
+                post_ids,
+            ).fetchall()
+        return {row["post_id"] for row in rows}

@@ -1,6 +1,7 @@
 """Validated application configuration."""
 
 from pathlib import Path
+from typing import Any, Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -34,6 +35,10 @@ class Settings(BaseSettings):
     api_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
     media_max_bytes: int = Field(default=100_000_000, gt=0)
     media_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
+    ignore_folders: list[str] = Field(default_factory=list)
+    log_level: Literal["debug", "info", "warning", "error"] = "info"
+    log_max_bytes: int = Field(default=5_000_000, gt=0)
+    log_backups: int = Field(default=5, ge=0)
 
     @field_validator("vault_path", mode="after")
     @classmethod
@@ -46,6 +51,16 @@ class Settings(BaseSettings):
     def use_default_scope_when_empty(cls, value: str | None) -> str:
         """Prevent an empty environment value from creating an invalid request."""
         return value.strip() if isinstance(value, str) and value.strip() else DEFAULT_X_SCOPE
+
+    @field_validator("ignore_folders", mode="before")
+    @classmethod
+    def split_ignore_folders(cls, value: Any) -> list[str]:
+        """Accept a comma-separated list of folder names or IDs."""
+        if value is None:
+            return []
+        if isinstance(value, str):
+            value = value.split(",")
+        return [str(item).strip() for item in value if str(item).strip()]
 
     @property
     def database_path(self) -> Path:

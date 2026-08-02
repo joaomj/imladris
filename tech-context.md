@@ -85,6 +85,7 @@ X Digest uses a local, three-layer data flow:
 | Gold store | `src/x_digest/gold.py` | Query and maintain normalized local data. |
 | Process lock | `src/x_digest/lock.py` | Prevent concurrent pipeline runs. |
 | Logger | `src/x_digest/logging_setup.py` | Append structured JSON events to the local log. |
+| Markdown | `src/x_digest/markdown.py` | Write one Markdown file per newly archived post. |
 
 ### 2.2 Main sync sequence
 
@@ -97,16 +98,23 @@ X Digest uses a local, three-layer data flow:
 5. Create the XDK client and refresh the token when it is expired.
 6. Call the authenticated-user endpoint.
 7. Load the bookmark cursor from `checkpoints`.
-8. Fetch one bookmark page at a time.
+8. Fetch one bookmark page at a time until the checkpoint ends or a complete
+   page contains only already-known posts (incremental stop).
 9. Write each page to Bronze.
 10. Normalize each page into Silver.
 11. Store the next bookmark cursor after each successful page.
 12. Fetch bookmark folders and their post IDs.
-13. Fetch folder post content in batches of up to 100 IDs.
+13. Fetch content for folder posts that are not `complete` in batches of up to
+    100 IDs.
 14. Normalize posts and folder membership from the hydrated responses.
 15. Download media with `pending` status.
-16. Write the run manifest.
-17. Mark the run as `success` and record counts.
+16. Write a Markdown file for each new post.
+17. Write the run manifest, including the measured X API usage summary.
+18. Mark the run as `success` and record counts.
+
+`sync --full` disables the incremental stop in step 8 and the content skip in
+step 13. A fully known bookmark page is never written to Bronze, so the
+incremental stop stores nothing extra.
 
 The pipeline marks the run as `failed`, stores the error string, and writes a
 failure event when any step raises an exception. The exception then reaches the
@@ -442,12 +450,18 @@ limits when `Settings` loads.
 | `XDIGEST_API_TIMEOUT_SECONDS` | `30.0` | X API request timeout. Range: greater than 0 and at most 300. |
 | `XDIGEST_MEDIA_MAX_BYTES` | `100000000` | Maximum downloaded media size. |
 | `XDIGEST_MEDIA_TIMEOUT_SECONDS` | `30.0` | Media request timeout. Range: greater than 0 and at most 300. |
+| `XDIGEST_IGNORE_FOLDERS` | empty | Comma-separated bookmark folder names or IDs skipped by sync. |
+| `XDIGEST_LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warning`, or `error`. |
+| `XDIGEST_LOG_MAX_BYTES` | `5000000` | Maximum aggregate log file size before rotation. |
+| `XDIGEST_LOG_BACKUPS` | `5` | Number of rotated aggregate log files kept. |
 
 The computed paths are:
 
 ```text
 database_path = <vault>/silver.sqlite
 log_path      = <vault>/logs/application.jsonl
+log_dir       = <vault>/logs
+log_run_dir   = <vault>/logs/runs
 lock_path     = <vault>/run.lock
 bronze_root   = <vault>/bronze
 ```
@@ -709,6 +723,70 @@ processing for the page succeeds.
 The folder phase has no separate durable page checkpoint. Folder post retrieval
 uses the current folder API response.
 
+### 13.5 Incremental reads
+
+The bookmarks endpoint does not support `since_id` (the XDK `get_bookmarks`
+method accepts only `max_results` and `pagination_token`). X returns bookmarks
+newest-first, so the pipeline stops the bookmark loop as soon as a fetched page
+contains only post IDs that already exist in the `posts` table. An unchanged
+archive costs one bookmark page request per sync. Posts archived earlier by
+probes or folder hydration are already known and do not break the stop rule,
+because the rule requires the whole page to be known.
+
+The check runs before the page is written to Bronze, so a fully known page is
+not stored again. The `stopped_early` run event records the stop.
+
+Folder content hydration skips posts with `content_state='complete'`. The
+folder posts page is still fetched for membership observations. Posts with
+`post_id_only` or `article_metadata_only` state are re-fetched because they
+lack content.
+
+ID-only post payloads (folder posts pages) never overwrite existing post
+content in Silver. `SilverNormalizer.apply_posts` updates only `last_seen_at`
+for a payload post whose raw object contains just an ID, preserving archived
+content and its `content_state`.
+
+`sync --full` disables both the bookmark early stop and the folder content
+dedup, forcing a complete re-read and re-hydration. It detects edits to old
+posts, which incremental runs intentionally skip.
+
+### 13.6 Markdown output
+
+`MarkdownWriter` writes one Markdown file per post, mirroring the bookmark
+folder organization:
+
+```text
+<vault>/markdown/
+├── posts/<post_id>.md              # posts bookmarked directly, in no folder
+└── folders/<folder-name>/<post_id>.md
+```
+
+A post in several folders gets one file per folder. Folder names are sanitized
+(`/\:*?"<>|` and control characters become `_`, empty or dot-only names become
+`folder`); when two folders share a sanitized name, the folder ID is appended
+to the directory name.
+
+The file contains front matter (post ID, author, created at, URL, content
+state), the post body, and a media section. Image media (`photo`) appears
+inline as `![media_key](relative_path)`. Other media (video, animated GIF,
+audio) appears as a clickable link. The relative paths point into
+`data/bronze/`, computed from each file's own directory depth, so media files
+are never duplicated.
+
+The writer follows the write-once policy of the database records: a file is
+created only when it does not exist, and existing files are never overwritten,
+so manual edits survive subsequent runs. Posts with neither text nor media
+produce no file. The pipeline calls it after media download in `sync`,
+`probe-post`, and `probe-bookmarks`; `rebuild-silver` leaves the files
+untouched because they are independent of the normalized database. Run counts
+`markdown_written`, `markdown_skipped`, and `markdown_no_content` appear in the
+run manifest, and per-file events are logged at debug level.
+
+The standalone command `x-digest markdown` runs the same writer without any
+API access, so it consumes no X tokens. It is idempotent: it only creates
+missing files, which also backfills posts archived before this feature
+existed.
+
 ### 13.3 Process lock
 
 `ProcessLock` creates `data/run.lock` with `O_CREAT | O_EXCL` and writes the
@@ -729,13 +807,18 @@ The downloader enforces a response size limit from both `Content-Length` and
 the number of bytes read. It guesses the file extension from content type,
 then URL suffix, then uses `.bin`.
 
+`rebuild-silver` preserves the download state: it snapshots the media table
+before deleting it and restores `status`, `archive_path`, `sha256`, and
+`error` for the re-created rows, so a rebuild never triggers re-downloads.
+Media rows that exist only in Silver (not in Bronze) are not re-created.
+
 ## 14. Manual Operations
 
 The application runs only when the owner invokes a CLI command. Normal
-`sync` resumes the saved bookmark checkpoint and continues through folders and
-media. `sync --max-pages N` is a bounded diagnostic option and skips folders
-and media; combine it with `--dry-run` when testing API access without archive
-writes.
+`sync` reads new bookmark pages incrementally, then folders and media.
+`sync --full` re-reads everything. `sync --max-pages N` is a bounded
+diagnostic option and skips folders and media; combine it with `--dry-run`
+when testing API access without archive writes.
 
 ### 14.1 Common runbooks
 
@@ -746,8 +829,9 @@ uv run x-digest status
 uv run x-digest verify --full
 ```
 
-Check `data/logs/application.jsonl` and the `runs` and `run_events` tables when
-the result is unexpected.
+Check `data/logs/` (the aggregate log and the per-run files under
+`data/logs/runs/`) and the `runs` and `run_events` tables when the result is
+unexpected. The run ID in SQLite matches the correlation ID in the log files.
 
 #### Resume a failed sync
 
@@ -757,6 +841,8 @@ uv run x-digest sync
 
 The bookmark cursor resumes from the saved checkpoint. Do not delete the
 checkpoint unless you intentionally want to read from the beginning again.
+A failed run leaves its own log file under `data/logs/runs/`, which is never
+rotated away.
 
 #### Rebuild derived records
 
@@ -838,13 +924,33 @@ completion, and failure.
 
 ### 15.3 JSONL application log
 
-`JsonlLogger` appends one JSON object per line to:
+`JsonlLogger` writes structured JSON events through the stdlib logging
+framework. The aggregate log rotates by size and every pipeline run also has
+its own immutable file:
 
 ```text
-data/logs/application.jsonl
+data/logs/
+├── application.jsonl
+├── application.jsonl.1 ...    # rotated backups (5 MB x 5 by default)
+└── runs/<run_id>.jsonl        # one immutable file per pipeline run
 ```
 
-Each line contains a UTC timestamp, run ID, event, level, and event details.
+Each line contains a UTC timestamp, correlation ID, event, level, and event
+details. For pipeline runs, the correlation ID equals the run ID, so one ID
+links the log files, the `runs` table, `run_events`, Bronze objects, and
+observations. Non-pipeline commands (auth, status, verify, export, rebuild)
+log command start, completion, and failure under a correlation ID in the
+aggregate log only.
+
+The log level filters events before they reach the files. It is configured by
+`XDIGEST_LOG_LEVEL` or the global `--log-level` option.
+
+The `UsageTracker` in `x_api.py` captures measured X API usage per endpoint:
+request count, transport failures, and the lowest observed
+`x-rate-limit-remaining` and `x-app-limit-remaining` response headers. The
+pipeline records the summary in an `api_usage` run event and in the run
+`counts_json`, so `status` shows it. `UsageTrackingSession` logs a warning when
+remaining capacity falls below 20% of the window limit.
 
 There is no metrics backend, tracing backend, dashboard, or alert service.
 Incident diagnosis is local file and SQLite inspection.
@@ -870,6 +976,20 @@ The current tests cover:
 - Null referenced tweet fields.
 - Complete Article body extraction.
 - Folder post ID hydration into searchable content and authors.
+- ID-only folder payloads do not overwrite existing post content.
+- Folder-level ignore configuration by name and ID.
+- Incremental sync stops after a fully archived page.
+- Incremental sync captures new posts before the archived page.
+- `--full` sync re-reads archived pages.
+- Log level filtering and correlation ID on every log line.
+- Aggregate log rotation with backups.
+- Usage tracker min-rate-limit recording and retry counting.
+- CLI command correlation for non-pipeline commands.
+- Markdown files with embedded image references and linked video references.
+- Markdown write-once policy across runs.
+- Markdown output follows bookmark folder organization, including
+  multi-folder posts and repeated folder observations.
+- Standalone `markdown` CLI command with zero API usage.
 
 Run all tests with:
 
@@ -916,6 +1036,8 @@ The following limits are part of the current version:
 - The application does not support browser-cookie clients.
 - Folder-post retrieval uses the current XDK response and has no local folder
   pagination loop.
+- Incremental sync does not detect edits to already-archived posts; use
+  `sync --full` to detect them.
 - Failed media rows remain `failed` until a future maintenance operation changes
   their status.
 - All pipeline work is synchronous and single-process.

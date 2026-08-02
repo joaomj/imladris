@@ -60,11 +60,23 @@ post or modify bookmark state.
 
 ## Sync Bookmarks
 
-Run the normal bookmark sync. It resumes from the saved checkpoint and reads
-the remaining bookmark pages, folders, and media:
+Run the normal bookmark sync. It reads new bookmarks (X returns bookmarks
+newest-first), then folders, then media:
 
 ```bash
 uv run x-digest sync
+```
+
+The sync is incremental. X Digest stops reading bookmark pages as soon as a
+whole page contains posts that are already archived, so an unchanged archive
+costs exactly one API call per run. Folder post contents are re-fetched only
+for posts that are not archived with complete content yet.
+
+Run a complete re-read to detect edits to old posts and re-hydrate all folder
+content:
+
+```bash
+uv run x-digest sync --full
 ```
 
 For bounded CLI testing only, limit the read to one bookmark page:
@@ -83,6 +95,52 @@ The sync stores raw API pages, folder responses, normalized posts, bookmark
 membership observations, and media download results.
 Folder responses contain post IDs only, so X Digest retrieves their contents in
 batches of up to 100 IDs before indexing them.
+
+Skip one or more bookmark folders by name or ID. Their posts are never fetched,
+archived, or indexed:
+
+```bash
+uv run x-digest sync --ignore-folder spam --ignore-folder 'folder id'
+```
+
+Set the same list in `.env` with a comma-separated value:
+
+```text
+XDIGEST_IGNORE_FOLDERS=spam
+```
+
+## Logs And Measured Cost Data
+
+Every command writes structured JSONL logs. The aggregate log rotates by size,
+and every sync or probe run also has its own immutable log file:
+
+```text
+<project-root>/data/logs/
+├── application.jsonl            # rotated aggregate (5 MB x 5 backups)
+├── application.jsonl.1 ...      # rotated backups
+└── runs/<run_id>.jsonl          # one immutable file per run
+```
+
+Every log line carries a `correlation_id`. For sync and probe runs, the
+correlation ID equals the run ID, so one ID links the log files, the `runs`
+table, `run_events`, Bronze objects, and observations.
+
+Control the log level with `--log-level` or the environment variable:
+
+```bash
+uv run x-digest --log-level debug sync
+```
+
+```text
+XDIGEST_LOG_LEVEL=info
+```
+
+The end of every sync run records measured X API usage: request count per
+endpoint, retried attempts, and the lowest `x-rate-limit-remaining` and
+`x-app-limit-remaining` values observed. This data appears in the `api_usage`
+log event and in the run summary shown by `status`. A warning is logged when a
+rate limit falls below 20% of its capacity. The log size settings are
+`XDIGEST_LOG_MAX_BYTES` (default 5000000) and `XDIGEST_LOG_BACKUPS` (default 5).
 
 ## Inspect Bookmark Samples
 
@@ -130,6 +188,44 @@ Rebuild the normalized database from the immutable raw layer:
 uv run x-digest rebuild-silver
 ```
 
+## Markdown Output
+
+Every sync and probe run writes a Markdown file for each newly archived post,
+following your bookmark organization:
+
+```text
+data/markdown/
+├── posts/                  # posts bookmarked directly, in no folder
+│   └── 1234567890.md
+└── folders/                # posts organized by bookmark folder
+    └── agents/
+        └── 9876543210.md
+```
+
+A post that belongs to several folders gets one file in each folder directory.
+Unsafe characters in folder names are replaced with `_`; two folders with the
+same name get their ID appended to the directory name.
+
+Each file contains the post text (or full Article body), its author, date, and
+source URL. When a post has downloaded media, the file references it: images
+appear inline with `![media](path)` and videos and other media appear as
+clickable links. The paths point at the media files inside `data/bronze/`, so
+there is only one copy of each media file.
+
+Markdown files follow the same policy as the database records: a file is
+written once when the post is first archived and is never regenerated, so
+hand-made edits are safe. Posts that have neither text nor media produce no
+file.
+
+Generate Markdown for all posts that still lack a file, without any sync and
+without consuming X API quota:
+
+```bash
+uv run x-digest markdown
+```
+
+The command is local and idempotent: it only creates missing files.
+
 ## Local Storage
 
 The vault lives in `data/` inside the project root:
@@ -138,7 +234,8 @@ The vault lives in `data/` inside the project root:
 <project-root>/data/
 ├── bronze/              # immutable API responses + media
 ├── silver.sqlite        # normalized records + FTS5 index
-├── logs/application.jsonl
+├── markdown/posts/      # one Markdown file per archived post
+├── logs/                # rotated aggregate + per-run log files
 ```
 
 The project is fully self-contained. Move the entire directory to
@@ -157,18 +254,16 @@ scheduler.
 
 ## Next Steps
 
-These items are intentionally deferred. The current sync behavior remains
-unchanged until the investigation is complete.
+These items are intentionally deferred.
 
 - Confirm from current official X API documentation whether the bookmarks
   endpoint supports incremental reads, such as `since_id` or an equivalent
-  cursor strategy.
-- Design a low-cost daily bookmark sync that avoids rereading the complete
-  archive while preserving recovery and archive integrity.
+  cursor strategy. The current incremental sync stops at already-archived
+  pages instead, which costs one API call per unchanged run.
 - Change folder synchronization to run weekly because folders rarely change.
 - Record the current X API pricing, with the source date and source URL.
 - Estimate daily and weekly costs for bookmark pages, folder reads, retries,
-  token refreshes, and media downloads.
+  token refreshes, and media downloads, using the measured usage in the logs.
 
 ## Scope Boundaries
 

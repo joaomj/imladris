@@ -89,11 +89,14 @@ class SilverNormalizer:
         posts = payload.get("data", [])
         if isinstance(posts, dict):
             posts = [posts]
-        includes = payload.get("includes", {})
-        users = includes.get("users", []) if isinstance(includes, dict) else []
+        includes = payload.get("includes") or {}
+        users = includes.get("users") if isinstance(includes, dict) else None
+        users = users or []
         authors = {
             str(user.get("id")): user for user in users if isinstance(user, dict) and user.get("id")
         }
+        raw_media = includes.get("media") if isinstance(includes, dict) else None
+        media_items = raw_media or []
         now = utc_now()
         count = 0
         if not isinstance(posts, list):
@@ -104,7 +107,7 @@ class SilverNormalizer:
                     continue
                 media_by_key = {
                     str(item.get("media_key")): item
-                    for item in (includes.get("media", []) if isinstance(includes, dict) else [])
+                    for item in media_items
                     if isinstance(item, dict) and item.get("media_key")
                 }
                 normalized = self._normalize_post(raw_post, authors, media_by_key)
@@ -126,39 +129,51 @@ class SilverNormalizer:
                             now,
                         ),
                     )
+                post_values = (
+                    post_id,
+                    normalized["author_id"],
+                    normalized["username"],
+                    normalized["created_at"],
+                    normalized["url"],
+                    normalized["text"],
+                    normalized["note_text"],
+                    normalized["article_body"],
+                    normalized["article_json"],
+                    normalized["content_state"],
+                    normalized["language"],
+                    normalized["public_metrics_json"],
+                    normalized["attachments_json"],
+                    normalized["content_hash"],
+                    now,
+                    now,
+                )
+                if normalized["content_state"] == "post_id_only":
+                    conflict = (
+                        "ON CONFLICT(post_id) DO UPDATE SET "
+                        "last_seen_at=excluded.last_seen_at"
+                    )
+                else:
+                    conflict = (
+                        """ON CONFLICT(post_id) DO UPDATE SET author_id=excluded.author_id,
+                        username=excluded.username, created_at=excluded.created_at,
+                        url=excluded.url, text=excluded.text, note_text=excluded.note_text,
+                        article_body=excluded.article_body, article_json=excluded.article_json,
+                        content_state=excluded.content_state,
+                        language=excluded.language,
+                        public_metrics_json=excluded.public_metrics_json,
+                        attachments_json=excluded.attachments_json,
+                        current_content_hash=excluded.current_content_hash,
+                        last_seen_at=excluded.last_seen_at"""
+                    )
                 connection.execute(
                     """INSERT INTO posts(post_id, author_id, username, created_at, url, text,
                        note_text, article_body, article_json, content_state, language,
                        public_metrics_json,
                        attachments_json, current_content_hash, first_seen_at, last_seen_at)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                       ON CONFLICT(post_id) DO UPDATE SET author_id=excluded.author_id,
-                       username=excluded.username, created_at=excluded.created_at,
-                       url=excluded.url, text=excluded.text, note_text=excluded.note_text,
-                       article_body=excluded.article_body, article_json=excluded.article_json,
-                       content_state=excluded.content_state,
-                       language=excluded.language, public_metrics_json=excluded.public_metrics_json,
-                       attachments_json=excluded.attachments_json,
-                       current_content_hash=excluded.current_content_hash,
-                       last_seen_at=excluded.last_seen_at""",
-                    (
-                        post_id,
-                        normalized["author_id"],
-                        normalized["username"],
-                        normalized["created_at"],
-                        normalized["url"],
-                        normalized["text"],
-                        normalized["note_text"],
-                        normalized["article_body"],
-                        normalized["article_json"],
-                        normalized["content_state"],
-                        normalized["language"],
-                        normalized["public_metrics_json"],
-                        normalized["attachments_json"],
-                        normalized["content_hash"],
-                        now,
-                        now,
-                    ),
+                       """
+                    + conflict,
+                    post_values,
                 )
                 connection.execute(
                     """INSERT OR IGNORE INTO post_versions(post_id, content_hash,

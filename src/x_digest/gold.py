@@ -151,6 +151,18 @@ class GoldStore:
 
     def rebuild_silver(self, bronze_root: Path) -> dict[str, int]:
         """Rebuild normalized tables from immutable Bronze objects."""
+        with self.database.connect() as connection:
+            media_state = {
+                str(row["media_key"]): (
+                    row["status"],
+                    row["archive_path"],
+                    row["sha256"],
+                    row["error"],
+                )
+                for row in connection.execute(
+                    """SELECT media_key, status, archive_path, sha256, error FROM media"""
+                ).fetchall()
+            }
         with self.database.transaction() as connection:
             for table in (
                 "posts_fts",
@@ -184,5 +196,12 @@ class GoldStore:
                 context = json.loads(row["context_json"])
                 counts["posts"] += normalizer.apply_posts(
                     row["run_id"], row["object_id"], payload, context.get("folder_id")
+                )
+        with self.database.transaction() as connection:
+            for media_key, (status, path, digest, error) in media_state.items():
+                connection.execute(
+                    """UPDATE media SET status=?, archive_path=?, sha256=?, error=?
+                       WHERE media_key=?""",
+                    (status, path, digest, error, media_key),
                 )
         return counts
