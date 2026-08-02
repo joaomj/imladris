@@ -60,19 +60,20 @@ post or modify bookmark state.
 
 ## Sync Bookmarks
 
-Run a full bookmark sync:
+Run the normal bookmark sync. It resumes from the saved checkpoint and reads
+the remaining bookmark pages, folders, and media:
 
 ```bash
 uv run x-digest sync
 ```
 
-Limit a test sync to one bookmark page:
+For bounded CLI testing only, limit the read to one bookmark page:
 
 ```bash
 uv run x-digest sync --max-pages 1
 ```
 
-Preview API reads without writing Bronze or Silver content:
+For a bounded API test without writing Bronze or Silver content:
 
 ```bash
 uv run x-digest sync --max-pages 1 --dry-run
@@ -80,6 +81,8 @@ uv run x-digest sync --max-pages 1 --dry-run
 
 The sync stores raw API pages, folder responses, normalized posts, bookmark
 membership observations, and media download results.
+Folder responses contain post IDs only, so X Digest retrieves their contents in
+batches of up to 100 IDs before indexing them.
 
 ## Inspect Bookmark Samples
 
@@ -136,7 +139,6 @@ The vault lives in `data/` inside the project root:
 ├── bronze/              # immutable API responses + media
 ├── silver.sqlite        # normalized records + FTS5 index
 ├── logs/application.jsonl
-└── scheduler-state.json
 ```
 
 The project is fully self-contained. Move the entire directory to
@@ -150,17 +152,23 @@ XDIGEST_VAULT_PATH=/path/to/vault
 
 Bronze objects are never overwritten or deleted by X Digest.
 
-## Daily Login Sync
+X Digest runs manually through the CLI. It does not install or run a background
+scheduler.
 
-Install the per-user macOS LaunchAgent:
+## Next Steps
 
-```bash
-uv run x-digest install-scheduler
-```
+These items are intentionally deferred. The current sync behavior remains
+unchanged until the investigation is complete.
 
-The agent starts at login and checks once per hour. The durable state guard
-allows one successful sync per local calendar day. Network or authentication
-failures remain retriable.
+- Confirm from current official X API documentation whether the bookmarks
+  endpoint supports incremental reads, such as `since_id` or an equivalent
+  cursor strategy.
+- Design a low-cost daily bookmark sync that avoids rereading the complete
+  archive while preserving recovery and archive integrity.
+- Change folder synchronization to run weekly because folders rarely change.
+- Record the current X API pricing, with the source date and source URL.
+- Estimate daily and weekly costs for bookmark pages, folder reads, retries,
+  token refreshes, and media downloads.
 
 ## Scope Boundaries
 

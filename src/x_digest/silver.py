@@ -215,7 +215,10 @@ class SilverNormalizer:
         note_text = _text_value(raw.get("note_tweet"))
         article = raw.get("article") if isinstance(raw.get("article"), dict) else None
         article_body = _text_value(article)
-        content_state = "article_metadata_only" if article and not article_body else "complete"
+        if set(raw) == {"id"}:
+            content_state = "post_id_only"
+        else:
+            content_state = "article_metadata_only" if article and not article_body else "complete"
         text = str(raw.get("text", ""))
         references = [
             item

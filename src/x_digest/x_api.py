@@ -39,6 +39,7 @@ MEDIA_FIELDS = [
     "width",
 ]
 USER_FIELDS = ["created_at", "description", "id", "name", "public_metrics", "url", "username"]
+MAX_POST_IDS_PER_REQUEST = 100
 
 
 class TimeoutSession(requests.Session):
@@ -125,6 +126,21 @@ class XApi:
         response = self._retry(
             lambda: self.client.posts.get_by_id(
                 id=post_id,
+                tweet_fields=POST_FIELDS,
+                expansions=EXPANSIONS,
+                media_fields=MEDIA_FIELDS,
+                user_fields=USER_FIELDS,
+            )
+        )
+        return model_dict(response)
+
+    def posts(self, post_ids: list[str]) -> dict[str, Any]:
+        """Fetch details for up to 100 posts in one request."""
+        if not post_ids or len(post_ids) > MAX_POST_IDS_PER_REQUEST:
+            raise ValueError("batch post retrieval requires between 1 and 100 IDs")
+        response = self._retry(
+            lambda: self.client.posts.get_by_ids(
+                ids=post_ids,
                 tweet_fields=POST_FIELDS,
                 expansions=EXPANSIONS,
                 media_fields=MEDIA_FIELDS,

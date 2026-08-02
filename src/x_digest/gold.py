@@ -8,14 +8,16 @@ from pathlib import Path
 from typing import Any
 
 from .db import Database
+from .paths import resolve_stored_path, vault_root
 from .silver import SilverNormalizer
 
 
 class GoldStore:
     """Provide local read and maintenance operations."""
 
-    def __init__(self, database: Database) -> None:
+    def __init__(self, database: Database, vault_path: Path | None = None) -> None:
         self.database = database
+        self.vault_path = vault_root(vault_path or database.path.parent)
 
     def status(self) -> dict[str, Any]:
         """Return local record counts and the latest run."""
@@ -127,21 +129,23 @@ class GoldStore:
         for row in objects:
             checked += 1
             try:
-                compressed = Path(row["path"]).read_bytes()
+                compressed = resolve_stored_path(self.vault_path, row["path"]).read_bytes()
                 payload = gzip.decompress(compressed)
                 digest = hashlib.sha256(payload).hexdigest()
-                if digest != row["payload_sha256"] or not Path(row["manifest_path"]).exists():
+                manifest = resolve_stored_path(self.vault_path, row["manifest_path"])
+                if digest != row["payload_sha256"] or not manifest.exists():
                     failed += 1
-            except (OSError, gzip.BadGzipFile):
+            except (OSError, ValueError, gzip.BadGzipFile):
                 failed += 1
         if full:
             for row in media:
                 checked += 1
                 try:
-                    digest = hashlib.sha256(Path(row["archive_path"]).read_bytes()).hexdigest()
+                    archive_path = resolve_stored_path(self.vault_path, row["archive_path"])
+                    digest = hashlib.sha256(archive_path.read_bytes()).hexdigest()
                     if digest != row["sha256"]:
                         failed += 1
-                except OSError:
+                except (OSError, ValueError):
                     failed += 1
         return {"checked": checked, "failed": failed}
 
@@ -168,9 +172,9 @@ class GoldStore:
             ).fetchall()
         counts = {"objects": 0, "posts": 0, "folders": 0}
         for row in objects:
-            path = Path(row["path"])
-            if not path.resolve().is_relative_to(bronze_root.resolve()):
-                continue
+            path = resolve_stored_path(self.vault_path, row["path"])
+            if not path.is_relative_to(bronze_root.resolve()):
+                raise ValueError(f"Bronze object is outside the vault: {path}")
             with gzip.open(path, "rt", encoding="utf-8") as stream:
                 payload = json.load(stream)
             counts["objects"] += 1

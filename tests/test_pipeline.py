@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import subprocess
 import uuid
 from pathlib import Path
@@ -11,6 +12,7 @@ from x_digest.config import DEFAULT_X_SCOPE, Settings
 from x_digest.db import Database, utc_now
 from x_digest.gold import GoldStore
 from x_digest.media import MediaDownloader
+from x_digest.pipeline import Pipeline
 from x_digest.silver import SilverNormalizer
 
 POST_COUNT = 2
@@ -18,6 +20,41 @@ OBSERVATION_COUNT = 4
 VERSION_COUNT = 2
 BRONZE_OBJECT_COUNT = 2
 MEDIA_ATTEMPT_COUNT = 2
+USAGE_ERROR = 2
+FOLDER_POST_COUNT = 2
+
+
+class FolderContentApi:
+    """Fake external X service for the complete folder-sync user flow."""
+
+    def current_user(self) -> dict[str, object]:
+        return {"data": {"id": "owner"}}
+
+    def bookmark_page(
+        self, _user_id: str, _cursor: str | None, _max_results: int | None = None
+    ) -> dict[str, object]:
+        return {"data": [], "meta": {"result_count": 0}}
+
+    def folders(self, _user_id: str) -> object:
+        yield {"data": [{"id": "agents", "name": "agents"}]}
+
+    def folder_posts(self, _user_id: str, _folder_id: str) -> dict[str, object]:
+        return {"data": [{"id": "501"}, {"id": "502"}]}
+
+    def posts(self, post_ids: list[str]) -> dict[str, object]:
+        assert post_ids == ["501", "502"]
+        return {
+            "data": [
+                {"id": "501", "author_id": "601", "text": "Agent memory patterns"},
+                {"id": "502", "author_id": "602", "text": "Reliable tool loops"},
+            ],
+            "includes": {
+                "users": [
+                    {"id": "601", "username": "alice", "name": "Alice"},
+                    {"id": "602", "username": "bob", "name": "Bob"},
+                ]
+            },
+        }
 
 
 def _payload() -> dict[str, object]:
@@ -91,6 +128,11 @@ def test_append_only_observations_search_export_and_rebuild(tmp_path: Path) -> N
     database, _ = _seed_vault(tmp_path)
     store = GoldStore(database)
 
+    with database.connect() as connection:
+        paths = connection.execute("SELECT path, manifest_path FROM bronze_objects").fetchall()
+    assert all(not Path(row["path"]).is_absolute() for row in paths)
+    assert all(not Path(row["manifest_path"]).is_absolute() for row in paths)
+
     assert store.status()["counts"] == {
         "bronze_objects": BRONZE_OBJECT_COUNT,
         "posts": POST_COUNT,
@@ -144,6 +186,74 @@ def test_cli_status_uses_configured_vault(tmp_path: Path) -> None:
         env=environment,
     )
     assert '"posts": 2' in result.stdout
+
+
+def test_cli_dry_run_requires_a_page_bound() -> None:
+    result = subprocess.run(
+        ["uv", "run", "x-digest", "sync", "--dry-run"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == USAGE_ERROR
+    assert "requires --max-pages" in result.stderr
+
+
+def test_cli_has_no_scheduler_commands() -> None:
+    result = subprocess.run(
+        ["uv", "run", "x-digest", "--help"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert "install-scheduler" not in result.stdout
+    assert "scheduled-sync" not in result.stdout
+
+
+def test_sync_downloads_searchable_content_for_folder_bookmarks(tmp_path: Path) -> None:
+    settings = Settings(vault_path=tmp_path)
+    result = Pipeline(settings, api=FolderContentApi()).sync()
+    store = GoldStore(Database(settings.database_path))
+
+    assert result["folder_posts"] == FOLDER_POST_COUNT
+    assert [post["post_id"] for post in store.search("Agent OR Reliable")] == ["501", "502"]
+    assert store.show("501")["username"] == "alice"
+    with Database(settings.database_path).connect() as connection:
+        memberships = connection.execute(
+            "SELECT COUNT(*) FROM bookmark_memberships WHERE folder_id='agents'"
+        ).fetchone()[0]
+    assert memberships == FOLDER_POST_COUNT
+
+
+def test_moved_legacy_vault_remains_verifiable_and_rebuildable(tmp_path: Path) -> None:
+    original = tmp_path / "original"
+    database, _ = _seed_vault(original)
+    with database.transaction() as connection:
+        rows = connection.execute(
+            "SELECT object_id, path, manifest_path FROM bronze_objects"
+        ).fetchall()
+        for row in rows:
+            connection.execute(
+                "UPDATE bronze_objects SET path=?, manifest_path=? WHERE object_id=?",
+                (
+                    str(original / row["path"]),
+                    str(original / row["manifest_path"]),
+                    row["object_id"],
+                ),
+            )
+
+    moved = tmp_path / "moved"
+    shutil.move(str(original), str(moved))
+    moved_database = Database(moved / "silver.sqlite")
+    moved_database.initialize()
+    store = GoldStore(moved_database)
+
+    assert store.verify(full=True) == {"checked": 2, "failed": 0}
+    assert store.rebuild_silver(moved / "bronze") == {
+        "objects": BRONZE_OBJECT_COUNT,
+        "posts": OBSERVATION_COUNT,
+        "folders": 0,
+    }
 
 
 def test_empty_scope_configuration_uses_read_only_defaults() -> None:

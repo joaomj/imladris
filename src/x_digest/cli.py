@@ -2,20 +2,38 @@
 
 import argparse
 import json
+import sqlite3
 import sys
 from pathlib import Path
 from typing import Any
 
-from .auth import authorization_url, exchange_callback
+from pydantic import ValidationError
+from requests import RequestException
+
+from .auth import AuthError, authorization_url, exchange_callback
 from .config import load_settings
 from .db import Database
 from .gold import GoldStore
+from .lock import LockAlreadyHeld
 from .pipeline import Pipeline
-from .scheduler import install_launch_agent, scheduled_sync
 
 
 def _print(value: Any) -> None:
     print(json.dumps(value, indent=2, ensure_ascii=False, default=str))
+
+
+def _positive_int(value: str) -> int:
+    """Parse a positive integer command argument."""
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("value must be at least 1")
+    return parsed
+
+
+def _print_error(error: Exception) -> int:
+    """Print one machine-readable expected error to stderr."""
+    print(json.dumps({"error": str(error)}, ensure_ascii=False), file=sys.stderr)
+    return 1
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -27,7 +45,12 @@ def build_parser() -> argparse.ArgumentParser:
     auth.add_argument("--callback-url", help="full localhost callback URL")
 
     sync = commands.add_parser("sync", help="fetch bookmarks into the local vault")
-    sync.add_argument("--max-pages", type=int, default=None)
+    sync.add_argument(
+        "--max-pages",
+        type=_positive_int,
+        default=None,
+        help="bound bookmark pages for diagnostic testing",
+    )
     sync.add_argument("--dry-run", action="store_true")
 
     probe = commands.add_parser("probe-post", help="fetch exactly one canonical post")
@@ -54,8 +77,6 @@ def build_parser() -> argparse.ArgumentParser:
     verify = commands.add_parser("verify", help="verify local archive hashes")
     verify.add_argument("--full", action="store_true")
     commands.add_parser("rebuild-silver", help="rebuild normalized records from Bronze")
-    commands.add_parser("install-scheduler", help="install the daily macOS LaunchAgent")
-    commands.add_parser("scheduled-sync", help=argparse.SUPPRESS)
     return parser
 
 
@@ -76,8 +97,6 @@ def _handle_live(args: argparse.Namespace, settings: Any) -> int:
         _print(Pipeline(settings).probe_bookmarks(args.max_results))
     elif args.command == "probe-post":
         _print(Pipeline(settings).probe_post(args.url))
-    else:
-        _print(scheduled_sync(settings))
     return 0
 
 
@@ -92,8 +111,7 @@ def _handle_gold(args: argparse.Namespace, settings: Any) -> int:
     elif args.command == "show":
         result = store.show(args.post_id)
         if result is None:
-            print(f"post not found: {args.post_id}", file=sys.stderr)
-            return 1
+            raise ValueError(f"post not found: {args.post_id}")
         _print(result)
     elif args.command == "export":
         output = args.output or settings.vault_path / "exports" / f"bookmarks.{args.format}"
@@ -112,16 +130,27 @@ def _handle_gold(args: argparse.Namespace, settings: Any) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     """Run one CLI command."""
-    args = build_parser().parse_args(argv)
-    settings = load_settings()
-    if args.command == "auth":
-        return _handle_auth(args, settings)
-    if args.command in {"sync", "probe-post", "probe-bookmarks", "scheduled-sync"}:
-        return _handle_live(args, settings)
-    if args.command == "install-scheduler":
-        _print({"plist": str(install_launch_agent(settings))})
-        return 0
-    return _handle_gold(args, settings)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.command == "sync" and args.dry_run and args.max_pages is None:
+        parser.error("sync --dry-run requires --max-pages for a bounded API test")
+    try:
+        settings = load_settings()
+        if args.command == "auth":
+            return _handle_auth(args, settings)
+        if args.command in {"sync", "probe-post", "probe-bookmarks"}:
+            return _handle_live(args, settings)
+        return _handle_gold(args, settings)
+    except (
+        AuthError,
+        LockAlreadyHeld,
+        OSError,
+        RequestException,
+        sqlite3.Error,
+        ValidationError,
+        ValueError,
+    ) as error:
+        return _print_error(error)
 
 
 if __name__ == "__main__":

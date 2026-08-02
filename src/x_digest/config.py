@@ -34,7 +34,12 @@ class Settings(BaseSettings):
     api_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
     media_max_bytes: int = Field(default=100_000_000, gt=0)
     media_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
-    scheduler_interval_seconds: int = Field(default=3600, gt=0)
+
+    @field_validator("vault_path", mode="after")
+    @classmethod
+    def normalize_vault_path(cls, value: Path) -> Path:
+        """Resolve the vault once so persisted paths are independent of CWD."""
+        return value.expanduser().resolve()
 
     @field_validator("x_scope", mode="before")
     @classmethod

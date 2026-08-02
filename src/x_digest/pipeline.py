@@ -13,7 +13,7 @@ from .lock import ProcessLock
 from .logging_setup import JsonlLogger
 from .media import MediaDownloader
 from .silver import SilverNormalizer
-from .x_api import XApi
+from .x_api import MAX_POST_IDS_PER_REQUEST, XApi
 
 POST_URL = re.compile(r"^https?://(?:www\.)?(?:x|twitter)\.com/[^/]+/status/(\d+)(?:[/?#].*)?$")
 
@@ -33,8 +33,9 @@ def _next_token(payload: dict[str, Any]) -> str | None:
 class Pipeline:
     """Run the Bronze-to-Silver pipeline."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, api: Any | None = None) -> None:
         self.settings = settings
+        self.api = api
         self.database = Database(settings.database_path)
         self.database.initialize()
         self.bronze = BronzeWriter(settings.vault_path, self.database)
@@ -70,13 +71,75 @@ class Pipeline:
                 (utc_now(), status, json.dumps(counts), error, run_id),
             )
 
+    def _sync_folders(self, api: Any, user_id: str, run_id: str, counts: dict[str, int]) -> None:
+        """Archive folders and hydrate their post IDs in batches."""
+        for folder_payload in api.folders(user_id):
+            counts["folder_pages"] += 1
+            self.bronze.write_json(
+                BronzeWriteRequest(
+                    run_id,
+                    "folders",
+                    folder_payload,
+                    "/2/users/{id}/bookmark_folders",
+                    None,
+                    _source_ids(folder_payload),
+                    counts["folder_pages"],
+                )
+            )
+            self.silver.apply_folders(run_id, folder_payload)
+            for folder in folder_payload.get("data", []):
+                if not isinstance(folder, dict) or not folder.get("id"):
+                    continue
+                folder_id = str(folder["id"])
+                folder_posts = api.folder_posts(user_id, folder_id)
+                folder_post_ids = _source_ids(folder_posts)
+                counts["folder_posts"] += len(folder_post_ids)
+                folder_record = self.bronze.write_json(
+                    BronzeWriteRequest(
+                        run_id,
+                        "folder-posts",
+                        folder_posts,
+                        "/2/users/{id}/bookmarks/folders/{folder_id}",
+                        None,
+                        folder_post_ids,
+                        counts["folder_posts"],
+                        {"folder_id": folder_id},
+                    )
+                )
+                self.silver.apply_posts(run_id, folder_record.object_id, folder_posts, folder_id)
+                for offset in range(0, len(folder_post_ids), MAX_POST_IDS_PER_REQUEST):
+                    batch_ids = folder_post_ids[offset : offset + MAX_POST_IDS_PER_REQUEST]
+                    content_payload = api.posts(batch_ids)
+                    counts["folder_content_batches"] += 1
+                    content_record = self.bronze.write_json(
+                        BronzeWriteRequest(
+                            run_id,
+                            "folder-post-contents",
+                            content_payload,
+                            "/2/tweets",
+                            None,
+                            _source_ids(content_payload),
+                            counts["folder_content_batches"],
+                            {"folder_id": folder_id},
+                        )
+                    )
+                    self.silver.apply_posts(
+                        run_id, content_record.object_id, content_payload, folder_id
+                    )
+
     def sync(self, max_pages: int | None = None, dry_run: bool = False) -> dict[str, int | str]:
         """Fetch bookmarks and folders, with an optional page bound."""
         run_id = self._start_run()
-        counts = {"bookmark_pages": 0, "posts": 0, "folder_pages": 0, "folder_posts": 0}
+        counts = {
+            "bookmark_pages": 0,
+            "posts": 0,
+            "folder_pages": 0,
+            "folder_posts": 0,
+            "folder_content_batches": 0,
+        }
         try:
             with ProcessLock(self.settings.lock_path):
-                api = XApi(authenticated_client(self.settings), self.settings)
+                api = self.api or XApi(authenticated_client(self.settings), self.settings)
                 user_payload = api.current_user()
                 user_data = user_payload.get("data", {})
                 user_id = str(user_data["id"])
@@ -110,45 +173,15 @@ class Pipeline:
                     if not next_cursor:
                         break
                     cursor = next_cursor
-                if not dry_run:
-                    for folder_payload in api.folders(user_id):
-                        counts["folder_pages"] += 1
-                        self.bronze.write_json(
-                            BronzeWriteRequest(
-                                run_id,
-                                "folders",
-                                folder_payload,
-                                "/2/users/{id}/bookmark_folders",
-                                None,
-                                _source_ids(folder_payload),
-                                counts["folder_pages"],
-                            )
-                        )
-                        self.silver.apply_folders(run_id, folder_payload)
-                        for folder in folder_payload.get("data", []):
-                            if not isinstance(folder, dict) or not folder.get("id"):
-                                continue
-                            folder_posts = api.folder_posts(user_id, str(folder["id"]))
-                            counts["folder_posts"] += len(_source_ids(folder_posts))
-                            posts_record = self.bronze.write_json(
-                                BronzeWriteRequest(
-                                    run_id,
-                                    "folder-posts",
-                                    folder_posts,
-                                    "/2/users/{id}/bookmarks/{folder_id}",
-                                    None,
-                                    _source_ids(folder_posts),
-                                    counts["folder_posts"],
-                                    {"folder_id": str(folder["id"])},
-                                )
-                            )
-                            self.silver.apply_posts(
-                                run_id, posts_record.object_id, folder_posts, str(folder["id"])
-                            )
+                if not dry_run and max_pages is None:
+                    self._sync_folders(api, user_id, run_id, counts)
                     media_counts = MediaDownloader(
                         self.settings, self.database, self.bronze
                     ).download_pending(run_id)
                     counts.update({f"media_{key}": value for key, value in media_counts.items()})
+                elif not dry_run:
+                    self._event(run_id, "pipeline", "folders_skipped", reason="bounded_sync")
+                if not dry_run:
                     self.bronze.write_run_manifest(run_id)
                 self._finish(run_id, "success", counts)
                 self._event(run_id, "pipeline", "completed", counts=counts)

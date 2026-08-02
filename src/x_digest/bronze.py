@@ -12,8 +12,9 @@ from pathlib import Path
 from typing import Any
 
 from .db import Database, utc_now
+from .paths import resolve_stored_path, stored_path, vault_root
 
-BRONZE_SCHEMA_VERSION = "1"
+BRONZE_SCHEMA_VERSION = "2"
 
 
 @dataclass(frozen=True)
@@ -59,7 +60,8 @@ class BronzeWriter:
     """Write append-only JSON and media objects."""
 
     def __init__(self, vault_path: Path, database: Database) -> None:
-        self.root = vault_path / "bronze"
+        self.vault_path = vault_root(vault_path)
+        self.root = self.vault_path / "bronze"
         self.database = database
 
     def _run_directory(self, run_id: str) -> Path:
@@ -91,7 +93,7 @@ class BronzeWriter:
             "schema_version": BRONZE_SCHEMA_VERSION,
             "payload_sha256": payload_hash,
             "context": request.context or {},
-            "path": str(object_path),
+            "path": stored_path(self.vault_path, object_path),
         }
         _atomic_write(manifest_path, json.dumps(manifest, indent=2, sort_keys=True).encode())
         with self.database.transaction() as connection:
@@ -104,8 +106,8 @@ class BronzeWriter:
                     object_id,
                     request.run_id,
                     request.kind,
-                    str(object_path),
-                    str(manifest_path),
+                    stored_path(self.vault_path, object_path),
+                    stored_path(self.vault_path, manifest_path),
                     request.endpoint,
                     request.pagination_cursor,
                     payload_hash,
@@ -155,7 +157,10 @@ class BronzeWriter:
                 {
                     "object_id": row["object_id"],
                     "kind": row["kind"],
-                    "path": row["path"],
+                    "path": stored_path(
+                        self.vault_path,
+                        resolve_stored_path(self.vault_path, row["path"]),
+                    ),
                     "payload_sha256": row["payload_sha256"],
                     "source_ids": json.loads(row["source_ids_json"]),
                     "context": json.loads(row["context_json"]),

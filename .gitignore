@@ -64,6 +64,5 @@ logs/
 *.log
 *.sqlite
 *.sqlite-*
-scheduler-state.json
 run.lock
 inspection/

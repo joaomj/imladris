@@ -8,6 +8,7 @@ from pathlib import Path
 from .bronze import BronzeWriter
 from .config import Settings
 from .db import Database, utc_now
+from .paths import stored_path
 
 
 class MediaDownloader:
@@ -33,7 +34,13 @@ class MediaDownloader:
                 path, digest = self.bronze.write_media(
                     run_id, str(row["media_key"]), content, extension
                 )
-                self._mark(str(row["media_key"]), "downloaded", str(path), digest, None)
+                self._mark(
+                    str(row["media_key"]),
+                    "downloaded",
+                    stored_path(self.bronze.vault_path, path),
+                    digest,
+                    None,
+                )
                 counts["downloaded"] += 1
             except (OSError, urllib.error.URLError, ValueError) as error:
                 self._mark(str(row["media_key"]), "failed", None, None, str(error))
