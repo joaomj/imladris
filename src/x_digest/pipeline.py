@@ -8,7 +8,7 @@ from typing import Any
 
 from .auth import authenticated_client
 from .bronze import BronzeWriter, BronzeWriteRequest
-from .config import Settings
+from .config import Settings, folder_is_ignored
 from .db import Database, utc_now
 from .lock import ProcessLock
 from .logging_setup import JsonlLogger
@@ -206,12 +206,8 @@ class Pipeline:
     @staticmethod
     def _is_ignored_folder(folder: dict[str, Any], ignore_folders: list[str]) -> bool:
         """Return True when a folder matches an ignored name or ID."""
-        if not ignore_folders:
-            return False
-        folder_id = str(folder["id"])
-        name = str(folder.get("name", "")).casefold()
-        return any(
-            folder_id == ignored or name == str(ignored).casefold() for ignored in ignore_folders
+        return folder_is_ignored(
+            str(folder["id"]), str(folder.get("name", "")), ignore_folders
         )
 
     def sync(

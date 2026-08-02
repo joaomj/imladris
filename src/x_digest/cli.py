@@ -101,7 +101,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     verify = commands.add_parser("verify", help="verify local archive hashes")
     verify.add_argument("--full", action="store_true")
-    commands.add_parser("rebuild-silver", help="rebuild normalized records from Bronze")
+    rebuild = commands.add_parser("rebuild-silver", help="rebuild normalized records from Bronze")
+    rebuild.add_argument(
+        "--ignore-folder",
+        action="append",
+        default=[],
+        help="skip one bookmark folder by name or ID; repeat to ignore several",
+    )
     commands.add_parser(
         "markdown", help="write Markdown files for posts that do not have one yet"
     )
@@ -201,8 +207,11 @@ def _handle_gold(args: argparse.Namespace, settings: Any, correlation_id: str) -
         writer = MarkdownWriter(settings, database, log, correlation_id)
         result = writer.write_new(correlation_id)
         log.emit(correlation_id, "command_completed", "info", command="markdown", **result)
-    else:
-        result = store.rebuild_silver(settings.vault_path / "bronze")
+    elif args.command == "rebuild-silver":
+        ignore_folders = (args.ignore_folder or []) + settings.ignore_folders
+        result = store.rebuild_silver(
+            settings.vault_path / "bronze", ignore_folders or None
+        )
         log.emit(
             correlation_id,
             "command_completed",

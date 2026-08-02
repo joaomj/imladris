@@ -7,6 +7,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from .config import folder_is_ignored
 from .db import Database
 from .paths import resolve_stored_path, vault_root
 from .silver import SilverNormalizer
@@ -149,7 +150,9 @@ class GoldStore:
                     failed += 1
         return {"checked": checked, "failed": failed}
 
-    def rebuild_silver(self, bronze_root: Path) -> dict[str, int]:
+    def rebuild_silver(
+        self, bronze_root: Path, ignore_folders: list[str] | None = None
+    ) -> dict[str, int]:
         """Rebuild normalized tables from immutable Bronze objects."""
         with self.database.connect() as connection:
             media_state = {
@@ -183,6 +186,17 @@ class GoldStore:
                    ORDER BY created_at, object_id"""
             ).fetchall()
         counts = {"objects": 0, "posts": 0, "folders": 0}
+        folder_names: dict[str, str] = {}
+        for row in objects:
+            if row["kind"] != "folders":
+                continue
+            with gzip.open(
+                resolve_stored_path(self.vault_path, row["path"]), "rt", encoding="utf-8"
+            ) as stream:
+                payload = json.load(stream)
+            for folder in payload.get("data") or []:
+                if isinstance(folder, dict) and folder.get("id"):
+                    folder_names[str(folder["id"])] = str(folder.get("name") or "")
         for row in objects:
             path = resolve_stored_path(self.vault_path, row["path"])
             if not path.is_relative_to(bronze_root.resolve()):
@@ -191,11 +205,35 @@ class GoldStore:
                 payload = json.load(stream)
             counts["objects"] += 1
             if row["kind"] == "folders":
-                counts["folders"] += normalizer.apply_folders(row["run_id"], payload)
+                data = payload.get("data") or []
+                if ignore_folders:
+                    data = [
+                        folder
+                        for folder in data
+                        if isinstance(folder, dict)
+                        and folder.get("id")
+                        and not folder_is_ignored(
+                            str(folder["id"]),
+                            str(folder.get("name") or ""),
+                            ignore_folders,
+                        )
+                    ]
+                counts["folders"] += normalizer.apply_folders(
+                    row["run_id"], {**payload, "data": data}
+                )
             else:
                 context = json.loads(row["context_json"])
+                folder_id = context.get("folder_id")
+                if (
+                    ignore_folders
+                    and folder_id
+                    and folder_is_ignored(
+                        str(folder_id), folder_names.get(str(folder_id), ""), ignore_folders
+                    )
+                ):
+                    continue
                 counts["posts"] += normalizer.apply_posts(
-                    row["run_id"], row["object_id"], payload, context.get("folder_id")
+                    row["run_id"], row["object_id"], payload, folder_id
                 )
         with self.database.transaction() as connection:
             for media_key, (status, path, digest, error) in media_state.items():

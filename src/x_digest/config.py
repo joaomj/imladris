@@ -9,6 +9,16 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 DEFAULT_X_SCOPE = "bookmark.read tweet.read users.read offline.access"
 
 
+def folder_is_ignored(folder_id: str, name: str, ignore_folders: list[str]) -> bool:
+    """Return True when a folder ID or name matches an ignore entry."""
+    if not ignore_folders:
+        return False
+    return any(
+        folder_id == str(ignored) or name.casefold() == str(ignored).casefold()
+        for ignored in ignore_folders
+    )
+
+
 def _find_project_root() -> Path:
     """Walk up from this file to find the project root with pyproject.toml."""
     current = Path(__file__).resolve()

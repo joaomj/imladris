@@ -366,6 +366,42 @@ def test_markdown_follows_folder_organization(tmp_path: Path) -> None:
     assert "Agent memory patterns" in second
 
 
+def test_rebuild_silver_skips_ignored_folders(tmp_path: Path) -> None:
+    settings = Settings(vault_path=tmp_path)
+    Pipeline(settings, api=FolderContentApi()).sync()
+    store = GoldStore(Database(settings.database_path))
+    store.rebuild_silver(tmp_path / "bronze", ["agents"])
+    with Database(settings.database_path).connect() as connection:
+        folder_count = connection.execute(
+            "SELECT COUNT(*) FROM folders WHERE name='agents'"
+        ).fetchone()[0]
+        membership_count = connection.execute(
+            "SELECT COUNT(*) FROM bookmark_memberships WHERE folder_id='agents'"
+        ).fetchone()[0]
+        post_count = connection.execute(
+            "SELECT COUNT(*) FROM posts WHERE post_id IN ('501', '502')"
+        ).fetchone()[0]
+    assert folder_count == 0
+    assert membership_count == 0
+    assert post_count == 0
+
+
+def test_rebuild_silver_keeps_folders_without_ignore_list(tmp_path: Path) -> None:
+    settings = Settings(vault_path=tmp_path)
+    Pipeline(settings, api=FolderContentApi()).sync()
+    store = GoldStore(Database(settings.database_path))
+    store.rebuild_silver(tmp_path / "bronze")
+    with Database(settings.database_path).connect() as connection:
+        folder_count = connection.execute(
+            "SELECT COUNT(*) FROM folders WHERE name='agents'"
+        ).fetchone()[0]
+        membership_count = connection.execute(
+            "SELECT COUNT(*) FROM bookmark_memberships WHERE folder_id='agents'"
+        ).fetchone()[0]
+    assert folder_count == 1
+    assert membership_count == FOLDER_POST_COUNT
+
+
 def test_cli_markdown_command_writes_missing_files(tmp_path: Path) -> None:
     _seed_vault(tmp_path)
     environment = {**os.environ, "XDIGEST_VAULT_PATH": str(tmp_path)}

@@ -661,7 +661,8 @@ The CLI returns exit code `1` when any check fails.
 
 `rebuild-silver` deletes normalized tables and replays Bronze objects in
 `created_at`, `object_id` order. It preserves operational tables and Bronze
-files. It only replays paths inside the configured Bronze root.
+files. It only replays paths inside the configured Bronze root. The ignore
+list filters folders and folder-scoped objects; see section 13.4.
 
 This command is destructive to derived Silver and FTS records. Run it only
 when no pipeline operation is active, and run `verify --full` afterward.
@@ -811,6 +812,13 @@ then URL suffix, then uses `.bin`.
 before deleting it and restores `status`, `archive_path`, `sha256`, and
 `error` for the re-created rows, so a rebuild never triggers re-downloads.
 Media rows that exist only in Silver (not in Bronze) are not re-created.
+
+`rebuild-silver` also honors the ignore list (`--ignore-folder` flag and
+`XDIGEST_IGNORE_FOLDERS`). Ignored folders are skipped in the folders-list
+pages, and Bronze objects whose context points at an ignored folder are not
+re-normalized, so an ignored folder and its posts cannot reappear after a
+rebuild. The matching logic lives in `config.folder_is_ignored` and is shared
+with the sync pipeline.
 
 ## 14. Manual Operations
 
