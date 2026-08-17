@@ -4,6 +4,7 @@ import json
 import re
 import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from .auth import authenticated_client
@@ -107,9 +108,9 @@ class Pipeline:
             self.settings, self.database, self.bronze, self.log, run_id
         ).download_pending(run_id)
         counts.update({f"media_{key}": value for key, value in media_counts.items()})
-        markdown_counts = MarkdownWriter(
-            self.settings, self.database, self.log, run_id
-        ).write_new(run_id)
+        markdown_counts = MarkdownWriter(self.settings, self.database, self.log, run_id).write_new(
+            run_id
+        )
         counts.update({f"markdown_{key}": value for key, value in markdown_counts.items()})
 
     def _sync_folders(
@@ -206,9 +207,39 @@ class Pipeline:
     @staticmethod
     def _is_ignored_folder(folder: dict[str, Any], ignore_folders: list[str]) -> bool:
         """Return True when a folder matches an ignored name or ID."""
-        return folder_is_ignored(
-            str(folder["id"]), str(folder.get("name", "")), ignore_folders
-        )
+        return folder_is_ignored(str(folder["id"]), str(folder.get("name", "")), ignore_folders)
+
+    def _folders_due(self, user_id: str, full: bool) -> bool:
+        """Return True when folder content must be re-read for this run."""
+        if full or self.settings.folder_sync_days == 0:
+            return True
+        checkpoint = self.database.get_checkpoint(f"folders:{user_id}")
+        synced_at = checkpoint.get("synced_at") if isinstance(checkpoint, dict) else None
+        if not synced_at:
+            return True
+        try:
+            last_sync = datetime.fromisoformat(synced_at)
+        except ValueError:
+            return True
+        if last_sync.tzinfo is None:
+            last_sync = last_sync.replace(tzinfo=UTC)
+        return datetime.now(UTC) - last_sync >= timedelta(days=self.settings.folder_sync_days)
+
+    def _sync_folders_if_due(
+        self,
+        api: Any,
+        user_id: str,
+        run_id: str,
+        counts: dict[str, int],
+        options: FolderSyncOptions,
+    ) -> None:
+        """Read folder content when the configured interval has elapsed."""
+        if self._folders_due(user_id, options.full):
+            self._sync_folders(api, user_id, run_id, counts, options)
+            self.database.set_checkpoint(f"folders:{user_id}", {"synced_at": utc_now()})
+        else:
+            counts["folders_skipped"] = 1
+            self._event(run_id, "pipeline", "folders_skipped", reason="weekly_interval")
 
     def sync(
         self,
@@ -228,6 +259,7 @@ class Pipeline:
             "folder_posts": 0,
             "folder_content_batches": 0,
             "folders_ignored": 0,
+            "folders_skipped": 0,
             "stopped_early": 0,
         }
         api: Any = None
@@ -247,8 +279,10 @@ class Pipeline:
                     counts["bookmark_pages"] += 1
                     if not dry_run:
                         post_ids = _source_ids(payload)
-                        if not full and post_ids and self.database.known_post_ids(post_ids) == set(
-                            post_ids
+                        if (
+                            not full
+                            and post_ids
+                            and self.database.known_post_ids(post_ids) == set(post_ids)
                         ):
                             counts["stopped_early"] = 1
                             self._event(
@@ -283,7 +317,7 @@ class Pipeline:
                         break
                     cursor = next_cursor
                 if not dry_run and max_pages is None:
-                    self._sync_folders(
+                    self._sync_folders_if_due(
                         api,
                         user_id,
                         run_id,

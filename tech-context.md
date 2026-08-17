@@ -451,6 +451,7 @@ limits when `Settings` loads.
 | `XDIGEST_MEDIA_MAX_BYTES` | `100000000` | Maximum downloaded media size. |
 | `XDIGEST_MEDIA_TIMEOUT_SECONDS` | `30.0` | Media request timeout. Range: greater than 0 and at most 300. |
 | `XDIGEST_IGNORE_FOLDERS` | empty | Comma-separated bookmark folder names or IDs skipped by sync. |
+| `XDIGEST_FOLDER_SYNC_DAYS` | `7` | Minimum days between folder list and folder post reads. Range: 0 or more; 0 reads folders on every sync. |
 | `XDIGEST_LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warning`, or `error`. |
 | `XDIGEST_LOG_MAX_BYTES` | `5000000` | Maximum aggregate log file size before rotation. |
 | `XDIGEST_LOG_BACKUPS` | `5` | Number of rotated aggregate log files kept. |
@@ -721,8 +722,11 @@ The bookmark checkpoint key is `bookmarks:<user_id>`. Its JSON value contains
 the next pagination token. The pipeline updates it after Bronze and Silver
 processing for the page succeeds.
 
-The folder phase has no separate durable page checkpoint. Folder post retrieval
-uses the current folder API response.
+The folder phase has no per-page pagination checkpoint. Folder post retrieval
+uses the current folder API response. A separate cadence checkpoint with key
+`folders:<user_id>` stores the last folder sync time as `{"synced_at": ...}`;
+`Pipeline._folders_due` decides when the interval configured by
+`XDIGEST_FOLDER_SYNC_DAYS` (default 7) has elapsed.
 
 ### 13.5 Incremental reads
 
@@ -741,6 +745,14 @@ Folder content hydration skips posts with `content_state='complete'`. The
 folder posts page is still fetched for membership observations. Posts with
 `post_id_only` or `article_metadata_only` state are re-fetched because they
 lack content.
+
+Folder membership reads are bounded by a cadence checkpoint. The pipeline
+re-reads the folder list and folder posts at most once per
+`XDIGEST_FOLDER_SYNC_DAYS` days, because folders rarely change. A run skips the
+folder phase entirely when the interval has not elapsed and records the
+`folders_skipped` event with reason `weekly_interval`; the run summary exposes
+the `folders_skipped` count. `sync --full` and a setting of 0 always run the
+folder phase.
 
 ID-only post payloads (folder posts pages) never overwrite existing post
 content in Silver. `SilverNormalizer.apply_posts` updates only `last_seen_at`
@@ -1016,7 +1028,18 @@ bound and then run `verify --full`.
 ## 17. Deployment and Release
 
 There is no server deployment. The application runs on the owner's macOS user
-account and is invoked manually through the CLI.
+account. The CLI runs commands manually, and a launchd LaunchAgent runs
+`x-digest sync` weekly on Sunday at 06:00. The agent is installed with
+`scripts/install-scheduler.sh`, which writes the plist to
+`~/Library/LaunchAgents/com.x-digest.sync.plist` and loads it into the user
+session. The agent writes its output to `data/logs/scheduler.out.log` and
+`data/logs/scheduler.err.log`. Remove the agent with
+`scripts/install-scheduler.sh --remove`.
+
+The agent runs `uv run --project <project-root> x-digest sync` with the project
+directory as the working directory. It runs in the user session, so Keychain
+token access works the same as a manual run. Launchd restarts the agent after a
+reboot.
 
 There are no staging or production environments, CI workflows, containers, or
 release automation in the repository. A local release consists of:

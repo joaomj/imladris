@@ -153,7 +153,15 @@ uv run x-digest sync
 The sync is incremental. X Digest stops reading bookmark pages as soon as a
 whole page contains posts that are already archived, so an unchanged archive
 costs exactly one API call per run. Folder post contents are re-fetched only
-for posts that are not archived with complete content yet.
+for posts that are not archived with complete content yet, and folders are
+re-read at most once per `XDIGEST_FOLDER_SYNC_DAYS` days (default 7) because
+folders rarely change. Run `sync --full` to force a complete re-read including
+folders.
+
+The official X API bookmarks endpoint (`GET /2/users/{id}/bookmarks`) offers no
+`since_id` or equivalent incremental filter; its only cursor is the opaque
+`pagination_token`. Stopping at an already-archived page is therefore the only
+supported incremental strategy (docs.x.com/x-api/bookmarks/get-bookmarks).
 
 Run a complete re-read to detect edits to old posts and re-hydrate all folder
 content:
@@ -224,6 +232,27 @@ endpoint, retried attempts, and the lowest `x-rate-limit-remaining` and
 log event and in the run summary shown by `status`. A warning is logged when a
 rate limit falls below 20% of its capacity. The log size settings are
 `XDIGEST_LOG_MAX_BYTES` (default 5000000) and `XDIGEST_LOG_BACKUPS` (default 5).
+
+## X API Costs
+
+Pricing record. Retrieved from official X documentation on 2026-08-16.
+
+Official facts (X API changelog, docs.x.com):
+
+- X launched Pay-Per-Use pricing on 2026-02-06. Billing and plan details now
+  live in the Developer Console at console.x.com.
+- Since 2026-04-20, reads of your own data are "Owned Reads" at USD 0.001 per
+  resource. `GET /2/users/{id}/bookmarks` is listed as an Owned Read endpoint.
+- Post creation costs USD 0.015 per post, or USD 0.20 when the post contains a
+  URL.
+- The official documentation does not publish a full public rate card. The
+  console shows current per-endpoint rates.
+
+Reported rates (unofficial, consistent across independent third-party sources,
+2026-07): post read USD 0.005, user read USD 0.010, owned read USD 0.001,
+monthly cap of 2,000,000 post reads. Verify current rates in the console.
+
+Costs depend on resource volume. Check current rates and measured usage before estimating costs.
 
 ## Inspect Bookmark Samples
 
@@ -334,21 +363,37 @@ XDIGEST_VAULT_PATH=/path/to/vault
 
 Bronze objects are never overwritten or deleted by X Digest.
 
-X Digest runs manually through the CLI. It does not install or run a background
-scheduler.
+## Automated Weekly Sync
 
-## Next Steps
+X Digest runs as a launchd LaunchAgent on macOS. It runs `x-digest sync` every
+Sunday at 06:00 local time. The agent runs in your user session, so it can read
+the X token from the Keychain. Launchd starts the agent again after a reboot.
 
-These items are intentionally deferred.
+Install or update the agent:
 
-- Confirm from current official X API documentation whether the bookmarks
-  endpoint supports incremental reads, such as `since_id` or an equivalent
-  cursor strategy. The current incremental sync stops at already-archived
-  pages instead, which costs one API call per unchanged run.
-- Change folder synchronization to run weekly because folders rarely change.
-- Record the current X API pricing, with the source date and source URL.
-- Estimate daily and weekly costs for bookmark pages, folder reads, retries,
-  token refreshes, and media downloads, using the measured usage in the logs.
+```bash
+./scripts/install-scheduler.sh
+```
+
+Remove the agent:
+
+```bash
+./scripts/install-scheduler.sh --remove
+```
+
+The agent writes its command output to `data/logs/scheduler.out.log` and
+`data/logs/scheduler.err.log`. Every sync also writes its normal run records
+and `api_usage` events. The first run can be triggered immediately:
+
+```bash
+launchctl kickstart "gui/$(id -u)/com.x-digest.sync"
+```
+
+Inspect the agent state:
+
+```bash
+launchctl print "gui/$(id -u)/com.x-digest.sync"
+```
 
 ## Scope Boundaries
 

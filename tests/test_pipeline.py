@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import uuid
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from x_digest.bronze import BronzeWriter, BronzeWriteRequest
@@ -265,6 +266,24 @@ def test_cli_status_uses_configured_vault(tmp_path: Path) -> None:
     assert '"posts": 2' in result.stdout
 
 
+def test_env_ignore_folders_accepts_comma_separated_list() -> None:
+    environment = {**os.environ, "XDIGEST_IGNORE_FOLDERS": "alpha,beta"}
+    result = subprocess.run(
+        [
+            "uv",
+            "run",
+            "python",
+            "-c",
+            "from x_digest.config import load_settings; print(load_settings().ignore_folders)",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+    assert result.stdout.strip() == "['alpha', 'beta']"
+
+
 def test_cli_dry_run_requires_a_page_bound() -> None:
     result = subprocess.run(
         ["uv", "run", "x-digest", "sync", "--dry-run"],
@@ -285,6 +304,47 @@ def test_cli_has_no_scheduler_commands() -> None:
     )
     assert "install-scheduler" not in result.stdout
     assert "scheduled-sync" not in result.stdout
+
+
+def test_incremental_sync_skips_folders_within_interval(tmp_path: Path) -> None:
+    settings = Settings(vault_path=tmp_path)
+    api = FolderContentApi()
+    first = Pipeline(settings, api=api).sync()
+    assert first["folder_pages"] == 1
+    assert first["folders_skipped"] == 0
+    second = Pipeline(settings, api=api).sync()
+    assert second["folder_pages"] == 0
+    assert second["folder_posts"] == 0
+    assert second["folders_skipped"] == 1
+
+
+def test_incremental_sync_runs_folders_after_interval_and_full(tmp_path: Path) -> None:
+    settings = Settings(vault_path=tmp_path)
+    api = FolderContentApi()
+    Pipeline(settings, api=api).sync()
+    database = Database(settings.database_path)
+    database.set_checkpoint(
+        "folders:owner",
+        {"synced_at": (datetime.now(UTC) - timedelta(days=8)).isoformat()},
+    )
+    elapsed = Pipeline(settings, api=api).sync()
+    assert elapsed["folder_pages"] == 1
+    assert elapsed["folders_skipped"] == 0
+    within_interval = Pipeline(settings, api=api).sync()
+    assert within_interval["folders_skipped"] == 1
+    forced = Pipeline(settings, api=api).sync(full=True)
+    assert forced["folder_pages"] == 1
+    assert forced["folders_skipped"] == 0
+
+
+def test_folder_sync_days_zero_syncs_folders_every_run(tmp_path: Path) -> None:
+    settings = Settings(vault_path=tmp_path, folder_sync_days=0)
+    api = FolderContentApi()
+    first = Pipeline(settings, api=api).sync()
+    second = Pipeline(settings, api=api).sync()
+    assert first["folder_pages"] == 1
+    assert second["folder_pages"] == 1
+    assert second["folders_skipped"] == 0
 
 
 def test_sync_ignores_matching_folder_completely(tmp_path: Path) -> None:
@@ -335,9 +395,7 @@ def test_markdown_follows_folder_organization(tmp_path: Path) -> None:
     database = Database(settings.database_path)
     writer = MarkdownWriter(settings, database)
 
-    first = (tmp_path / "markdown" / "folders" / "agents" / "501.md").read_text(
-        encoding="utf-8"
-    )
+    first = (tmp_path / "markdown" / "folders" / "agents" / "501.md").read_text(encoding="utf-8")
     assert "Agent memory patterns" in first
     assert (tmp_path / "markdown" / "folders" / "agents" / "502.md").exists()
     assert not (tmp_path / "markdown" / "posts" / "501.md").exists()
@@ -360,9 +418,7 @@ def test_markdown_follows_folder_organization(tmp_path: Path) -> None:
         )
     counts = writer.write_new("md-run")
     assert counts == {"written": 1, "skipped": 2, "no_content": 0}
-    second = (tmp_path / "markdown" / "folders" / "tools" / "501.md").read_text(
-        encoding="utf-8"
-    )
+    second = (tmp_path / "markdown" / "folders" / "tools" / "501.md").read_text(encoding="utf-8")
     assert "Agent memory patterns" in second
 
 

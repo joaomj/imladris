@@ -1,10 +1,10 @@
 """Validated application configuration."""
 
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 DEFAULT_X_SCOPE = "bookmark.read tweet.read users.read offline.access"
 
@@ -45,7 +45,8 @@ class Settings(BaseSettings):
     api_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
     media_max_bytes: int = Field(default=100_000_000, gt=0)
     media_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
-    ignore_folders: list[str] = Field(default_factory=list)
+    ignore_folders: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    folder_sync_days: int = Field(default=7, ge=0)
     log_level: Literal["debug", "info", "warning", "error"] = "info"
     log_max_bytes: int = Field(default=5_000_000, gt=0)
     log_backups: int = Field(default=5, ge=0)
