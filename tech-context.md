@@ -120,6 +120,85 @@ The pipeline marks the run as `failed`, stores the error string, and writes a
 failure event when any step raises an exception. The exception then reaches the
 CLI caller.
 
+The full sequence diagram shows the OAuth flow, incremental reads, folders,
+media, and local commands:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Owner
+    participant CLI as x-digest CLI
+    participant Keychain as macOS Keychain
+    participant Pipeline
+    participant X as Official X API
+    participant Bronze
+    participant Silver as Silver SQLite
+    participant Media as Media host
+    participant Markdown as Markdown vault
+    participant Gold as Gold operations
+    participant Logs as JSONL logs
+
+    Owner->>CLI: Run auth
+    CLI->>Keychain: Store PKCE state
+    CLI-->>Owner: Show authorization URL
+    Owner->>CLI: Submit callback URL
+    CLI->>Keychain: Store OAuth token
+    Note over Owner,Keychain: Authorization is completed once. Later runs reuse the token.
+
+    Owner->>CLI: Run sync or probe
+    CLI->>Pipeline: Start run
+    Pipeline->>Keychain: Load or refresh token
+    Keychain-->>Pipeline: Access token
+    Pipeline->>X: Read current user and bookmark pages
+
+    loop Incremental bookmark pages
+        X-->>Pipeline: Posts and next cursor
+        Pipeline->>Bronze: Append raw page
+        Pipeline->>Silver: Normalize, index, and save checkpoint
+        opt Whole page is already archived
+            Pipeline->>Pipeline: Stop reading older pages
+        end
+    end
+
+    Pipeline->>X: Read bookmark folders
+    X-->>Pipeline: Folder names and IDs
+    loop Each non-ignored folder
+        Pipeline->>X: Read folder post IDs
+        X-->>Pipeline: Post IDs
+        Pipeline->>Bronze: Append folder response
+        Pipeline->>Silver: Record folder membership
+        opt Content is missing or sync is full
+            Pipeline->>X: Fetch post content, up to 100 IDs per request
+            X-->>Pipeline: Full post responses
+            Pipeline->>Bronze: Append hydrated responses
+            Pipeline->>Silver: Normalize and index content
+        end
+    end
+
+    Pipeline->>Media: Download pending media
+    Media-->>Pipeline: Media bytes or failure
+    Pipeline->>Bronze: Store media and download result
+    Pipeline->>Markdown: Write missing post files
+    Bronze-->>Markdown: Reuse shared media paths
+    Pipeline->>Bronze: Write run manifest
+    Pipeline->>Logs: Write run status, counts, and events
+    Pipeline-->>CLI: Return run result
+    CLI-->>Owner: Print result
+
+    Owner->>CLI: Run search, export, verify, or rebuild
+    CLI->>Gold: Execute local command
+    Gold->>Silver: Query normalized records
+    opt Verify archive
+        Gold->>Bronze: Check payload and media hashes
+    end
+    opt Rebuild Silver
+        Gold->>Bronze: Replay immutable raw objects
+        Bronze-->>Silver: Rebuild normalized records
+    end
+    Gold-->>CLI: Return results or write exports
+    CLI-->>Owner: Print result
+```
+
 ### 2.3 Probe sequences
 
 `probe-post` validates an X or Twitter status URL, fetches one post by ID, and
@@ -974,6 +1053,27 @@ remaining capacity falls below 20% of the window limit.
 
 There is no metrics backend, tracing backend, dashboard, or alert service.
 Incident diagnosis is local file and SQLite inspection.
+
+### 15.4 X API cost record
+
+Pricing record. Retrieved from official X documentation on 2026-08-16.
+
+Official facts (X API changelog, docs.x.com):
+
+- X launched Pay-Per-Use pricing on 2026-02-06. Billing and plan details now
+  live in the Developer Console at console.x.com.
+- Since 2026-04-20, reads of your own data are "Owned Reads" at USD 0.001 per
+  resource. `GET /2/users/{id}/bookmarks` is listed as an Owned Read endpoint.
+- Post creation costs USD 0.015 per post, or USD 0.20 when the post contains a
+  URL.
+- The official documentation does not publish a full public rate card. The
+  console shows current per-endpoint rates.
+
+Reported rates (unofficial, consistent across independent third-party sources,
+2026-07): post read USD 0.005, user read USD 0.010, owned read USD 0.001,
+monthly cap of 2,000,000 post reads. Verify current rates in the console.
+
+Costs depend on resource volume. Check current rates and measured usage before estimating costs.
 
 ## 16. Testing Strategy
 
