@@ -47,6 +47,9 @@ ENV/
 env.bak/
 venv.bak/
 
+# Tracked environment template (overrides global .env.* ignore)
+!.env.example
+
 # IDE
 .idea/
 .vscode/

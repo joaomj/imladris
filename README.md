@@ -35,7 +35,11 @@ Register this redirect URI in the X Developer application:
 http://localhost:8080/callback
 ```
 
-Set the client credentials in `.env`:
+Copy the template and set the client credentials:
+
+```bash
+cp .env.example .env
+```
 
 ```text
 XDIGEST_X_CLIENT_ID=your-client-id
@@ -72,11 +76,8 @@ later commands reuse the token.
 uv run x-digest sync
 ```
 
-The sync is incremental. It stops reading bookmark pages when a whole page
-contains only already-archived posts, so an unchanged archive costs one API
-call per run. Folders are re-read at most once per `XDIGEST_FOLDER_SYNC_DAYS`
-days (default 7). The official bookmarks endpoint has no `since_id` filter;
-stopping at an archived page is the only incremental strategy.
+The sync is incremental: it stops as soon as a page contains only
+already-archived posts. See `tech-context.md`, section 13.5 for the details.
 
 Force a complete re-read:
 
@@ -114,8 +115,8 @@ uv run x-digest verify --full
 uv run x-digest rebuild-silver
 ```
 
-`verify` checks the archive. `rebuild-silver` rebuilds the normalized database
-from the immutable raw layer and applies the ignore list.
+`verify` checks the archive; `rebuild-silver` rebuilds the searchable database
+from the raw archive and applies the ignore list.
 
 ### Inspect API samples
 
@@ -136,8 +137,6 @@ posts that still lack one, without any sync:
 ```bash
 uv run x-digest markdown
 ```
-
-The command is local and idempotent.
 
 ## Configuration
 
@@ -165,7 +164,7 @@ settings:
 ```
 
 The project is self-contained. Move the entire `data/` directory to relocate
-everything. Bronze objects are never overwritten or deleted by X Digest.
+everything.
 
 ## Automated Weekly Sync
 
@@ -187,8 +186,7 @@ Trigger the first run immediately:
 launchctl kickstart "gui/$(id -u)/com.x-digest.sync"
 ```
 
-The agent writes its output to `data/logs/scheduler.out.log` and
-`data/logs/scheduler.err.log`.
+See `tech-context.md`, section 17 for the agent behavior.
 
 ## Backup to Google Drive
 
@@ -209,10 +207,6 @@ Run the backup once:
 ./scripts/backup-to-drive.sh
 ```
 
-The script takes a consistent `sqlite3 .backup` snapshot of `silver.sqlite`
-before uploading, verifies the upload with `rclone check`, and logs to
-`data/logs/backup.log`.
-
 Install the launchd agent, which runs the backup every Sunday at 06:15, after
 the weekly sync:
 
@@ -227,7 +221,7 @@ Remove the agent:
 ```
 
 To restore, download the `x-digest-backup` folder from Drive back into
-`data/`.
+`data/`. See `tech-context.md`, section 14.2 for the backup details.
 
 ## Scope Boundaries
 

@@ -1001,6 +1001,22 @@ uv run x-digest status
 Do not restore personal archive data into a shared repository or commit it to
 Git.
 
+The weekly backup uses `scripts/backup-to-drive.sh` with `rclone`. The script:
+
+1. Takes a consistent `sqlite3 .backup` snapshot of `silver.sqlite` into a
+   temporary staging directory.
+2. Copies `data/` to the `x-digest-backup` folder on the `xdigest` remote,
+   excluding `silver.sqlite*`.
+3. Uploads the snapshot as `silver.sqlite` with `rclone copyto`, replacing the
+   live database with the consistent copy.
+4. Verifies the upload with `rclone check --one-way`.
+
+The script logs to `data/logs/backup.log`. Files on Drive are never deleted;
+the backup only grows. A launchd agent runs the script every Sunday at 06:15,
+after the weekly sync. Install the agent with
+`scripts/install-backup-scheduler.sh` and remove it with
+`scripts/install-backup-scheduler.sh --remove`.
+
 ## 15. Monitoring and Observability
 
 The application has three local observability records.
@@ -1140,6 +1156,11 @@ The agent runs `uv run --project <project-root> x-digest sync` with the project
 directory as the working directory. It runs in the user session, so Keychain
 token access works the same as a manual run. Launchd restarts the agent after a
 reboot.
+
+A second LaunchAgent runs the weekly Google Drive backup every Sunday at
+06:15, after the sync agent. It is installed with
+`scripts/install-backup-scheduler.sh` and removed with the `--remove` flag.
+See section 14.2 for the backup behavior.
 
 There are no staging or production environments, CI workflows, containers, or
 release automation in the repository. A local release consists of:
