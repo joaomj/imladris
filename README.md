@@ -190,6 +190,45 @@ launchctl kickstart "gui/$(id -u)/com.x-digest.sync"
 The agent writes its output to `data/logs/scheduler.out.log` and
 `data/logs/scheduler.err.log`.
 
+## Backup to Google Drive
+
+A weekly backup copies the `data/` directory to a `x-digest-backup` folder on
+Google Drive with `rclone`. Files are never deleted on Drive; the backup only
+grows.
+
+Requirements:
+
+- `rclone` installed (for example via Homebrew).
+- A Drive remote named `xdigest`, configured with your own Google OAuth client
+  ID. rclone's shared client ID is retired during 2026. The client ID and
+  secret come from `.env` (`GOOGLE_DRIVE_CLIENT_ID`, `GOOGLE_DRIVE_CLIENT_SECRET`).
+
+Run the backup once:
+
+```bash
+./scripts/backup-to-drive.sh
+```
+
+The script takes a consistent `sqlite3 .backup` snapshot of `silver.sqlite`
+before uploading, verifies the upload with `rclone check`, and logs to
+`data/logs/backup.log`.
+
+Install the launchd agent, which runs the backup every Sunday at 06:15, after
+the weekly sync:
+
+```bash
+./scripts/install-backup-scheduler.sh
+```
+
+Remove the agent:
+
+```bash
+./scripts/install-backup-scheduler.sh --remove
+```
+
+To restore, download the `x-digest-backup` folder from Drive back into
+`data/`.
+
 ## Scope Boundaries
 
 The current version does not include:
