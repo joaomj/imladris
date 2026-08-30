@@ -31,7 +31,11 @@ def _find_project_root() -> Path:
 class Settings(BaseSettings):
     """Configuration loaded from environment variables."""
 
-    model_config = SettingsConfigDict(env_prefix="XDIGEST_", env_file=".env")
+    model_config = SettingsConfigDict(
+        env_prefix="XDIGEST_",
+        env_file=".env",
+        extra="ignore",
+    )
 
     vault_path: Path = Field(default_factory=lambda: _find_project_root() / "data")
     x_client_id: str | None = None

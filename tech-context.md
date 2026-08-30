@@ -1001,21 +1001,35 @@ uv run x-digest status
 Do not restore personal archive data into a shared repository or commit it to
 Git.
 
-The weekly backup uses `scripts/backup-to-drive.sh` with `rclone`. The script:
+The weekly backup uses `scripts/backup-to-drive.sh` with `rclone` to Google
+Cloud Storage. The bucket name and `rclone` remote come from
+`XDIGEST_BACKUP_BUCKET` and `XDIGEST_BACKUP_REMOTE` (defaults to `gcs`). The
+script:
 
 1. Takes a consistent `sqlite3 .backup` snapshot of `silver.sqlite` into a
    temporary staging directory.
-2. Copies `data/` to the `x-digest-backup` folder on the `xdigest` remote,
-   excluding `silver.sqlite*`.
+2. Copies `data/` to `gcs:YOUR_BUCKET` on the `gcs` remote
+   (`google cloud storage` with `bucket_policy_only = true`), excluding
+   `silver.sqlite*`.
 3. Uploads the snapshot as `silver.sqlite` with `rclone copyto`, replacing the
    live database with the consistent copy.
 4. Verifies the upload with `rclone check --one-way`.
 
-The script logs to `data/logs/backup.log`. Files on Drive are never deleted;
-the backup only grows. A launchd agent runs the script every Sunday at 06:15,
-after the weekly sync. Install the agent with
-`scripts/install-backup-scheduler.sh` and remove it with
-`scripts/install-backup-scheduler.sh --remove`.
+Use a private `STANDARD` bucket in an Always Free region (`us-central1`,
+`us-west1`, `us-east1`) with uniform bucket-level access, public access
+prevention enforced, and 7 day soft delete. The script logs to
+`data/logs/backup.log`. Files on the bucket are never deleted; the backup only
+grows. A launchd agent runs the script every Sunday at 06:15, after the weekly
+sync. Install the agent with `scripts/install-backup-scheduler.sh` and remove
+it with `scripts/install-backup-scheduler.sh --remove`.
+
+Credentials are stored in the macOS Keychain under service `x-digest` and
+account `gcs-backup-credentials`. The backup script reads them with `keyring`
+and exports `RCLONE_GCS_SERVICE_ACCOUNT_CREDENTIALS` for `rclone`. If the
+Keychain entry is missing, `rclone` falls back to `service_account_file` in
+`rclone.conf`. Store the JSON once with
+`uv run python -c "import keyring, pathlib; p=pathlib.Path.home() / '.config/gcloud/your-key.json'; keyring.set_password('x-digest','gcs-backup-credentials', p.read_text())"`
+and remove the file.
 
 ## 15. Monitoring and Observability
 
@@ -1157,8 +1171,8 @@ directory as the working directory. It runs in the user session, so Keychain
 token access works the same as a manual run. Launchd restarts the agent after a
 reboot.
 
-A second LaunchAgent runs the weekly Google Drive backup every Sunday at
-06:15, after the sync agent. It is installed with
+A second LaunchAgent runs the weekly Google Cloud Storage backup every Sunday
+at 06:15, after the sync agent. It is installed with
 `scripts/install-backup-scheduler.sh` and removed with the `--remove` flag.
 See section 14.2 for the backup behavior.
 
