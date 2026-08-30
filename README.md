@@ -188,18 +188,41 @@ launchctl kickstart "gui/$(id -u)/com.x-digest.sync"
 
 See `tech-context.md`, section 17 for the agent behavior.
 
-## Backup to Google Drive
+## Backup to Google Cloud Storage (Free Tier)
 
-A weekly backup copies the `data/` directory to a `x-digest-backup` folder on
-Google Drive with `rclone`. Files are never deleted on Drive; the backup only
-grows.
+A weekly backup copies the `data/` directory to a private GCS bucket with
+`rclone`. Files are never deleted on the bucket; the backup only grows. Use a
+`STANDARD` bucket in an Always Free region (`us-central1`, `us-west1`,
+`us-east1`) with uniform bucket-level access, public access prevention
+enforced, and 7 day soft delete.
 
 Requirements:
 
 - `rclone` installed (for example via Homebrew).
-- A Drive remote named `xdigest`, configured with your own Google OAuth client
-  ID. rclone's shared client ID is retired during 2026. The client ID and
-  secret come from `.env` (`GOOGLE_DRIVE_CLIENT_ID`, `GOOGLE_DRIVE_CLIENT_SECRET`).
+- A GCS bucket and a `rclone` remote of type `google cloud storage`. Grant the
+  backup service account `roles/storage.objectUser` on only the backup bucket.
+  Configure the bucket name and remote through `.env`:
+
+  ```text
+  XDIGEST_BACKUP_BUCKET=your-gcs-bucket-name
+  XDIGEST_BACKUP_REMOTE=gcs
+  ```
+
+  Credentials are read from the macOS Keychain when available. Store the
+  service account JSON in the Keychain:
+
+  ```bash
+  uv run python -c "import keyring, pathlib; p=pathlib.Path.home() / '.config/gcloud/your-key.json'; keyring.set_password('x-digest','gcs-backup-credentials', p.read_text())"
+  rm ~/.config/gcloud/your-key.json  # optional, keep Keychain as the only copy
+  ```
+
+  The backup script exports `RCLONE_GCS_SERVICE_ACCOUNT_CREDENTIALS` from the
+  Keychain at runtime. As a fallback for one-off setups, you can create the
+  `rclone` remote with a file:
+
+  ```bash
+  rclone config create gcs googlecloudstorage service_account_file $HOME/.config/gcloud/your-key.json bucket_policy_only true
+  ```
 
 Run the backup once:
 
@@ -220,8 +243,15 @@ Remove the agent:
 ./scripts/install-backup-scheduler.sh --remove
 ```
 
-To restore, download the `x-digest-backup` folder from Drive back into
-`data/`. See `tech-context.md`, section 14.2 for the backup details.
+To restore, copy back from the bucket with `rclone copy`:
+
+```bash
+rclone copy gcs:your-gcs-bucket-name ./data/ --fast-list
+# or, with env vars set:
+rclone copy "$XDIGEST_BACKUP_REMOTE:$XDIGEST_BACKUP_BUCKET" ./data/ --fast-list
+```
+
+See `tech-context.md`, section 14.2 for the backup details.
 
 ## Scope Boundaries
 

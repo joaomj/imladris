@@ -10,6 +10,11 @@ dependencies = [
     "xdk>=0.10.0",
 ]
 
+[project.optional-dependencies]
+backup = [
+    "google-cloud-storage>=2.10.0",
+]
+
 [project.scripts]
 x-digest = "x_digest.cli:main"
 
