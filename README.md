@@ -168,11 +168,21 @@ everything.
 
 ## Automated Weekly Sync
 
-Install the launchd agent, which runs `x-digest sync` every Sunday at 06:00:
+Install the launchd agents, which run `x-digest sync` every Sunday at 06:00
+and the GCS backup at 06:15:
 
 ```bash
 ./scripts/install-scheduler.sh
+./scripts/install-backup-scheduler.sh
 ```
+
+Macs that are off or locked at 06:00 miss the calendar run. The shell
+trigger covers that case: the first interactive shell each ISO week starts
+the same two agents in the background after a 30-minute delay, once per
+week. It is already hooked into `~/.zshrc` via
+`scripts/zshrc-init.sh`, which calls `scripts/weekly-shell-trigger.sh`.
+Progress lands in `data/logs/weekly-trigger.log` with a once-per-week
+stamp at `data/logs/weekly-shell-trigger.stamp`.
 
 Remove the agent:
 
