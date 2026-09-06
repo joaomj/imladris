@@ -30,12 +30,12 @@ if [[ ! -x "$RCLONE_BIN" ]]; then
     exit 1
 fi
 
-# Prefer macOS Keychain for GCS credentials. If the service account JSON is
-# stored in the Keychain under service "x-digest" and account
-# "gcs-backup-credentials", export it for rclone via the env var.
+# Prefer macOS Keychain for GCS credentials. Use the explicit login keychain
+# because SSH sessions can default to the read-only System keychain.
 # Fallback is rclone.conf with service_account_file.
+LOGIN_KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
 if [[ -z "${RCLONE_GCS_SERVICE_ACCOUNT_CREDENTIALS:-}" ]]; then
-    if CREDENTIALS="$(uv run --project "$PROJECT_DIR" python -c "import keyring; v=keyring.get_password('x-digest','gcs-backup-credentials'); print(v or '')" 2>/dev/null)" && [[ -n "$CREDENTIALS" ]]; then
+    if CREDENTIALS="$(security find-generic-password -s x-digest -a gcs-backup-credentials -w "$LOGIN_KEYCHAIN" 2>/dev/null)" && [[ -n "$CREDENTIALS" ]]; then
         export RCLONE_GCS_SERVICE_ACCOUNT_CREDENTIALS="$CREDENTIALS"
     fi
 fi

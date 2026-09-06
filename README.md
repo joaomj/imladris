@@ -208,20 +208,50 @@ Requirements:
   XDIGEST_BACKUP_REMOTE=gcs
   ```
 
-  Credentials are read from the macOS Keychain when available. Store the
-  service account JSON in the Keychain:
+  The backup reads credentials from the macOS login Keychain. Store the service
+  account JSON under service `x-digest` and account `gcs-backup-credentials`:
 
   ```bash
-  uv run python -c "import keyring, pathlib; p=pathlib.Path.home() / '.config/gcloud/your-key.json'; keyring.set_password('x-digest','gcs-backup-credentials', p.read_text())"
-  rm ~/.config/gcloud/your-key.json  # optional, keep Keychain as the only copy
+  chmod 600 "$HOME/.config/gcloud/your-key.json"
+  security unlock-keychain "$HOME/Library/Keychains/login.keychain-db"
+  security add-generic-password \
+    -U \
+    -s x-digest \
+    -a gcs-backup-credentials \
+    -w "$(tr -d '\n' < "$HOME/.config/gcloud/your-key.json")" \
+    "$HOME/Library/Keychains/login.keychain-db"
   ```
 
-  The backup script exports `RCLONE_GCS_SERVICE_ACCOUNT_CREDENTIALS` from the
-  Keychain at runtime. As a fallback for one-off setups, you can create the
-  `rclone` remote with a file:
+  An SSH session can use the read-only System keychain by default. The explicit
+  login-keychain path prevents `-61 Write permissions error` during setup.
+
+  Verify the stored JSON without printing it:
 
   ```bash
-  rclone config create gcs googlecloudstorage service_account_file $HOME/.config/gcloud/your-key.json bucket_policy_only true
+  security find-generic-password \
+    -s x-digest \
+    -a gcs-backup-credentials \
+    -w \
+    "$HOME/Library/Keychains/login.keychain-db" \
+    | uv run python -c "import json,sys; d=json.load(sys.stdin); print('Keychain OK:', d.get('type') == 'service_account')"
+  ```
+
+  The expected result is `Keychain OK: True`. Run the backup before you remove
+  the source JSON file. After a successful backup, remove the file:
+
+  ```bash
+  ./scripts/backup-to-drive.sh
+  tail -n 8 data/logs/backup.log
+  rm "$HOME/.config/gcloud/your-key.json"
+  ```
+
+  The log must end with `backup end`. The script exports
+  `RCLONE_GCS_SERVICE_ACCOUNT_CREDENTIALS` from Keychain for `rclone`.
+
+  As a file-based fallback, configure the `rclone` remote with the JSON file:
+
+  ```bash
+  rclone config create gcs googlecloudstorage service_account_file "$HOME/.config/gcloud/your-key.json" bucket_policy_only true
   ```
 
 Run the backup once:

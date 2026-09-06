@@ -1023,13 +1023,32 @@ grows. A launchd agent runs the script every Sunday at 06:15, after the weekly
 sync. Install the agent with `scripts/install-backup-scheduler.sh` and remove
 it with `scripts/install-backup-scheduler.sh --remove`.
 
-Credentials are stored in the macOS Keychain under service `x-digest` and
-account `gcs-backup-credentials`. The backup script reads them with `keyring`
-and exports `RCLONE_GCS_SERVICE_ACCOUNT_CREDENTIALS` for `rclone`. If the
-Keychain entry is missing, `rclone` falls back to `service_account_file` in
-`rclone.conf`. Store the JSON once with
-`uv run python -c "import keyring, pathlib; p=pathlib.Path.home() / '.config/gcloud/your-key.json'; keyring.set_password('x-digest','gcs-backup-credentials', p.read_text())"`
-and remove the file.
+Credentials are stored in the macOS login Keychain. The item uses service
+`x-digest` and account `gcs-backup-credentials`. The backup script runs
+`/usr/bin/security` with the explicit path
+`~/Library/Keychains/login.keychain-db`. It exports the result as
+`RCLONE_GCS_SERVICE_ACCOUNT_CREDENTIALS` for `rclone`.
+
+An SSH security session can select `/Library/Keychains/System.keychain` as its
+default keychain. This keychain is read-only for a normal user. Python
+`keyring.set_password()` does not specify the login-keychain path. The call can
+fail with OSStatus `-61`, which means `Write permissions error`.
+
+Unlock the login Keychain and store the credential with an explicit path:
+
+```bash
+security unlock-keychain "$HOME/Library/Keychains/login.keychain-db"
+security add-generic-password \
+  -U \
+  -s x-digest \
+  -a gcs-backup-credentials \
+  -w "$(tr -d '\n' < "$HOME/.config/gcloud/your-key.json")" \
+  "$HOME/Library/Keychains/login.keychain-db"
+```
+
+Run `scripts/backup-to-drive.sh` before you remove the source JSON file. A
+successful `data/logs/backup.log` ends with `backup end`. If the Keychain item
+is missing, `rclone` can use `service_account_file` from `rclone.conf`.
 
 ## 15. Monitoring and Observability
 
@@ -1167,14 +1186,14 @@ session. The agent writes its output to `data/logs/scheduler.out.log` and
 `scripts/install-scheduler.sh --remove`.
 
 The agent runs `uv run --project <project-root> x-digest sync` with the project
-directory as the working directory. It runs in the user session, so Keychain
-token access works the same as a manual run. Launchd restarts the agent after a
-reboot.
+directory as the working directory. It runs in the user session and reads the
+X token from the login Keychain. Launchd restarts the agent after a reboot.
 
 A second LaunchAgent runs the weekly Google Cloud Storage backup every Sunday
 at 06:15, after the sync agent. It is installed with
 `scripts/install-backup-scheduler.sh` and removed with the `--remove` flag.
-See section 14.2 for the backup behavior.
+The backup script reads its credential from the explicit login-keychain path.
+See section 14.2 for the backup behavior and SSH setup instructions.
 
 There are no staging or production environments, CI workflows, containers, or
 release automation in the repository. A local release consists of:
