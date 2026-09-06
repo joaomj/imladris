@@ -109,8 +109,11 @@ X Digest uses a local, three-layer data flow:
 14. Normalize posts and folder membership from the hydrated responses.
 15. Download media with `pending` status.
 16. Write a Markdown file for each new post.
-17. Write the run manifest, including the measured X API usage summary.
-18. Mark the run as `success` and record counts.
+17. Deliver one pending Telegram digest batch through OpenRouter when
+    configured. Missing credentials or delivery failures never change the
+    archive status; the batch stays pending for the next run.
+18. Write the run manifest, including the measured X API usage summary.
+19. Mark the run as `success` and record counts.
 
 `sync --full` disables the incremental stop in step 8 and the content skip in
 step 13. A fully known bookmark page is never written to Bronze, so the
@@ -512,7 +515,10 @@ directory.
 
 ## 7. Configuration Reference
 
-All environment settings use the `XDIGEST_` prefix. Pydantic validates numeric
+All environment settings use the `XDIGEST_` prefix, except two Telegram
+aliases kept for existing local setups: `TELEGRAM_BOT_TOKEN` is an alias for
+`XDIGEST_TELEGRAM_BOT_TOKEN`, and `TELEGRAM_USER_ID` is an alias for
+`XDIGEST_TELEGRAM_CHAT_ID`. Pydantic validates numeric
 limits when `Settings` loads.
 
 | Environment variable | Default | Purpose |
@@ -523,6 +529,17 @@ limits when `Settings` loads.
 | `XDIGEST_X_REDIRECT_URI` | `http://localhost:8080/callback` | OAuth callback URI. |
 | `XDIGEST_X_SCOPE` | `bookmark.read tweet.read users.read offline.access` | OAuth read scopes. |
 | `XDIGEST_KEYCHAIN_SERVICE` | `x-digest` | Keychain service name. |
+| `XDIGEST_TELEGRAM_BOT_TOKEN` | None | Telegram bot token. `TELEGRAM_BOT_TOKEN` is accepted as an alias. |
+| `XDIGEST_TELEGRAM_CHAT_ID` | None | Telegram recipient chat ID. `TELEGRAM_USER_ID` is accepted as an alias. |
+| `XDIGEST_TELEGRAM_TIMEOUT_SECONDS` | `10.0` | Telegram request timeout. Range: greater than 0 and at most 60. |
+| `XDIGEST_LLM_BASE_URL` | `https://openrouter.ai/api/v1` | OpenAI-compatible LLM base URL. |
+| `XDIGEST_LLM_API_KEY` | None | OpenRouter API key. |
+| `XDIGEST_LLM_MODEL` | `openai/gpt-oss-120b` | Digest model routed to the cheapest Zero Data Retention provider. |
+| `XDIGEST_LLM_MAX_TOKENS` | `1200` | Maximum LLM response tokens. Range: 100 to 4000. |
+| `XDIGEST_LLM_TIMEOUT_SECONDS` | `30.0` | LLM request timeout. Range: greater than 0 and at most 120. |
+| `XDIGEST_DIGEST_MAX_POSTS` | `20` | Maximum posts per digest batch. Range: 1 to 50. |
+| `XDIGEST_DIGEST_MAX_CHARS_PER_POST` | `800` | Upper bound for post body text in the prompt. Range: 100 to 4000. |
+| `XDIGEST_DIGEST_PROMPT_MAX_CHARS` | `12000` | Total prompt budget including instructions and metadata. |
 | `XDIGEST_MAX_RESULTS_PER_PAGE` | `100` | X bookmark page size. Range: 1 to 100. |
 | `XDIGEST_MAX_RETRIES` | `3` | Retries after transient API failures. Range: 0 to 10. |
 | `XDIGEST_RETRY_BASE_SECONDS` | `1.0` | Exponential backoff base. Range: greater than 0 and at most 60. |
@@ -1068,7 +1085,35 @@ The `runs` table stores:
 
 The `run_events` table stores the run ID, stage, level, event name, timestamp,
 and JSON details. The pipeline writes events such as authentication success,
-completion, and failure.
+completion, and failure. Digest delivery uses stage `digest` with events such
+as `digest_sent`, `digest_skipped`, `digest_partial`, and `digest_failed`.
+
+### 14.3 Weekly Telegram content digest
+
+Unrestricted sync sends one digest batch after Markdown generation. A batch
+contains the oldest undelivered posts, up to `XDIGEST_DIGEST_MAX_POSTS`, with
+newer posts retained in the backlog. The digest checkpoint
+`digest:delivery` in `checkpoints` tracks the cursor, frozen rendered chunks,
+and acknowledged chunk progress independently of archive runs.
+
+`DigestBuilder` requests structured JSON from OpenRouter model
+`openai/gpt-oss-120b` over `https://openrouter.ai/api/v1/chat/completions`
+with cheapest Zero Data Retention routing:
+
+```json
+{"zdr": true, "provider": {"sort": "price", "zdr": true, "data_collection": "deny"}}
+```
+
+The prompt stays below `XDIGEST_DIGEST_PROMPT_MAX_CHARS`, including
+instructions and metadata. Bookmark content is treated as untrusted data.
+Output citations are validated against selected post IDs, then rendered
+locally as escaped HTML with canonical source links.
+
+`TelegramSender` packs rendered blocks into at most three 4000-character
+messages. Each Telegram chunk uses a 10-second timeout; OpenRouter uses a
+30-second timeout. Both retry transient HTTP statuses once initially plus
+three retries with 1s, 2s, and 4s backoff. Logs retain status codes and error
+categories only, never tokens, chat IDs, keys, or response bodies.
 
 ### 15.3 JSONL application log
 

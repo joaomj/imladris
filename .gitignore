@@ -69,3 +69,5 @@ logs/
 *.sqlite-*
 run.lock
 inspection/
+.agents/*
+!.agents/plans/

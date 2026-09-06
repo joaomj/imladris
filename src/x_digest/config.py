@@ -3,10 +3,15 @@
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from pydantic import Field, field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 DEFAULT_X_SCOPE = "bookmark.read tweet.read users.read offline.access"
+DEFAULT_LLM_BASE_URL = "https://openrouter.ai/api/v1"
+DEFAULT_LLM_MODEL = "openai/gpt-oss-120b"
+TELEGRAM_BOT_TOKEN_ACCOUNT = "telegram-bot-token"
+TELEGRAM_CHAT_ID_ACCOUNT = "telegram-chat-id"
+OPENROUTER_API_KEY_ACCOUNT = "openrouter-api-key"
 
 
 def folder_is_ignored(folder_id: str, name: str, ignore_folders: list[str]) -> bool:
@@ -35,6 +40,7 @@ class Settings(BaseSettings):
         env_prefix="XDIGEST_",
         env_file=".env",
         extra="ignore",
+        populate_by_name=True,
     )
 
     vault_path: Path = Field(default_factory=lambda: _find_project_root() / "data")
@@ -54,6 +60,33 @@ class Settings(BaseSettings):
     log_level: Literal["debug", "info", "warning", "error"] = "info"
     log_max_bytes: int = Field(default=5_000_000, gt=0)
     log_backups: int = Field(default=5, ge=0)
+    telegram_bot_token: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("XDIGEST_TELEGRAM_BOT_TOKEN", "TELEGRAM_BOT_TOKEN"),
+    )
+    telegram_chat_id: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("XDIGEST_TELEGRAM_CHAT_ID", "TELEGRAM_USER_ID"),
+    )
+    telegram_timeout_seconds: float = Field(default=10.0, gt=0, le=60)
+    llm_base_url: str = DEFAULT_LLM_BASE_URL
+    llm_api_key: str | None = None
+    llm_model: str = DEFAULT_LLM_MODEL
+    llm_max_tokens: int = Field(default=1200, ge=100, le=4000)
+    llm_timeout_seconds: float = Field(default=30.0, gt=0, le=120)
+    digest_max_posts: int = Field(default=20, ge=1, le=50)
+    digest_max_chars_per_post: int = Field(default=800, ge=100, le=4000)
+    digest_prompt_max_chars: int = Field(default=12000, ge=2000, le=100000)
+
+    @field_validator("telegram_bot_token", "telegram_chat_id", "llm_api_key", mode="before")
+    @classmethod
+    def empty_secret_becomes_missing(cls, value: Any) -> Any:
+        """Normalize blank credentials to missing so absence is explicit."""
+        if value is None:
+            return None
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     @field_validator("vault_path", mode="after")
     @classmethod
@@ -91,6 +124,14 @@ class Settings(BaseSettings):
     def lock_path(self) -> Path:
         """Return the process lock path."""
         return self.vault_path / "run.lock"
+
+    def telegram_enabled(self) -> bool:
+        """Return True when Telegram delivery credentials are configured."""
+        return bool(self.telegram_bot_token and self.telegram_chat_id)
+
+    def llm_enabled(self) -> bool:
+        """Return True when an LLM API key is configured."""
+        return bool(self.llm_api_key)
 
 
 def load_settings() -> Settings:

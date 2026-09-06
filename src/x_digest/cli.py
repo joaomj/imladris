@@ -14,8 +14,10 @@ from requests import RequestException
 from .auth import AuthError, authorization_url, exchange_callback
 from .config import load_settings
 from .db import Database
+from .digest import DigestBuilder, DigestStore
+from .digest_service import DigestContext, DigestOptions, DigestService
 from .gold import GoldStore
-from .lock import LockAlreadyHeld
+from .lock import LockAlreadyHeld, ProcessLock
 from .logging_setup import JsonlLogger
 from .markdown import MarkdownWriter
 from .pipeline import Pipeline
@@ -111,6 +113,29 @@ def build_parser() -> argparse.ArgumentParser:
     commands.add_parser(
         "markdown", help="write Markdown files for posts that do not have one yet"
     )
+    digest = commands.add_parser("digest", help="preview or send the weekly digest")
+    digest_mode = digest.add_mutually_exclusive_group(required=True)
+    digest_mode.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print the selected sources and layout preview without network calls",
+    )
+    digest_mode.add_argument(
+        "--send",
+        action="store_true",
+        help="generate the digest and send the next pending batch to Telegram",
+    )
+    digest.add_argument(
+        "--limit",
+        type=_positive_int,
+        default=None,
+        help="override digest_max_posts for this delivery",
+    )
+    digest.add_argument(
+        "--model",
+        default=None,
+        help="override llm_model for this delivery",
+    )
     return parser
 
 
@@ -125,6 +150,65 @@ def _handle_auth(args: argparse.Namespace, settings: Any, correlation_id: str) -
         print(authorization_url(settings))
         log.emit(correlation_id, "authorization_url_created", "info")
     return 0
+
+
+def _handle_digest(args: argparse.Namespace, settings: Any, correlation_id: str) -> int:
+    log = _logger_for(settings)
+    log.emit(correlation_id, "command_started", "debug", command="digest")
+    if args.limit is not None:
+        settings.digest_max_posts = args.limit
+    if args.model:
+        settings.llm_model = args.model
+    database = Database(settings.database_path)
+    database.initialize()
+    store = DigestStore(database, settings)
+    builder = DigestBuilder(settings)
+    if args.dry_run:
+        state = store.load_state()
+        limit = args.limit or settings.digest_max_posts
+        posts, _has_more, total = store.select_batch(state.get("cursor"), limit)
+        _system, _user, prompt_chars, _truncated = builder.build_prompt(posts)
+        preview = builder.build_preview(posts, prompt_chars)
+        log.emit(
+            correlation_id,
+            "command_completed",
+            "info",
+            command="digest",
+            mode="dry-run",
+            posts=len(posts),
+            prompt_chars=prompt_chars,
+        )
+        _print(
+            {
+                "mode": "dry-run",
+                "text": preview,
+                "post_ids": [str(row["post_id"]) for row in posts],
+                "prompt_chars": prompt_chars,
+                "pending_total": total,
+            }
+        )
+        return 0
+    if not settings.telegram_enabled() or not settings.llm_enabled():
+        print(
+            json.dumps({"error": "digest delivery is not configured"}, ensure_ascii=False),
+            file=sys.stderr,
+        )
+        return 2
+    context = DigestContext(
+        settings=settings,
+        database=database,
+        log=log,
+        correlation_id=correlation_id,
+        options=DigestOptions(limit=args.limit, model=args.model),
+    )
+    with ProcessLock(settings.lock_path):
+        counts: dict[str, int] = {}
+        result = DigestService(context).deliver(correlation_id, counts)
+    log.emit(
+        correlation_id, "command_completed", "info", command="digest", mode="send", **result
+    )
+    _print(result)
+    return 0 if result.get("status") in {"sent", "partial"} else 1
 
 
 def _handle_live(args: argparse.Namespace, settings: Any, correlation_id: str) -> int:
@@ -239,6 +323,8 @@ def main(argv: list[str] | None = None) -> int:
             return _handle_auth(args, settings, correlation_id)
         if args.command in {"sync", "probe-post", "probe-bookmarks"}:
             return _handle_live(args, settings, correlation_id)
+        if args.command == "digest":
+            return _handle_digest(args, settings, correlation_id)
         return _handle_gold(args, settings, correlation_id)
     except (
         AuthError,

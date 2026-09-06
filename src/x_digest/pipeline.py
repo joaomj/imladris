@@ -11,6 +11,7 @@ from .auth import authenticated_client
 from .bronze import BronzeWriter, BronzeWriteRequest
 from .config import Settings, folder_is_ignored
 from .db import Database, utc_now
+from .digest_service import DigestContext, DigestDependencies, DigestService
 from .lock import ProcessLock
 from .logging_setup import JsonlLogger
 from .markdown import MarkdownWriter
@@ -27,6 +28,27 @@ class FolderSyncOptions:
 
     ignore_folders: list[str]
     full: bool
+
+
+@dataclass
+class SyncRequest:
+    """Inputs controlling one bookmark synchronization."""
+
+    max_pages: int | None = None
+    dry_run: bool = False
+    ignore_folders: list[str] | None = None
+    full: bool = False
+
+
+@dataclass
+class SyncRun:
+    """Live objects needed while a synchronization is running."""
+
+    api: Any
+    user_id: str
+    run_id: str
+    counts: dict[str, int]
+    request: SyncRequest
 
 
 def _source_ids(payload: dict[str, Any]) -> list[str]:
@@ -101,6 +123,33 @@ class Pipeline:
         counts["api_requests"] = usage["requests"]
         counts["api_retries"] = usage["retries"]
         self._event(run_id, "pipeline", "api_usage", level="info", **usage)
+
+    def _finalize_unbounded_sync(self, sync_run: SyncRun) -> None:
+        """Run folder sync, media, Markdown, and digest for a full sync."""
+        self._sync_folders_if_due(
+            sync_run.api,
+            sync_run.user_id,
+            sync_run.run_id,
+            sync_run.counts,
+            FolderSyncOptions(sync_run.request.ignore_folders or [], sync_run.request.full),
+        )
+        self._archive_media_and_markdown(sync_run.run_id, sync_run.counts)
+        self._send_digest(sync_run.run_id, sync_run.counts)
+
+    def _send_digest(self, run_id: str, counts: dict[str, int]) -> None:
+        """Deliver one pending digest batch without failing the archive run."""
+        context = DigestContext(
+            settings=self.settings,
+            database=self.database,
+            log=self.log,
+            correlation_id=run_id,
+            dependencies=DigestDependencies(
+                emit=lambda event, level="info", **details: self._event(
+                    run_id, "digest", event, level, **details
+                )
+            ),
+        )
+        DigestService(context).deliver(run_id, counts)
 
     def _archive_media_and_markdown(self, run_id: str, counts: dict[str, int]) -> None:
         """Download pending media, then write Markdown files for new posts."""
@@ -274,64 +323,10 @@ class Pipeline:
                 self._event(run_id, "extract", "authenticated", user_id=user_id)
                 cursor_value = self.database.get_checkpoint(f"bookmarks:{user_id}")
                 cursor = cursor_value.get("next_token") if isinstance(cursor_value, dict) else None
-                while max_pages is None or counts["bookmark_pages"] < max_pages:
-                    payload = api.bookmark_page(user_id, cursor)
-                    counts["bookmark_pages"] += 1
-                    if not dry_run:
-                        post_ids = _source_ids(payload)
-                        if (
-                            not full
-                            and post_ids
-                            and self.database.known_post_ids(post_ids) == set(post_ids)
-                        ):
-                            counts["stopped_early"] = 1
-                            self._event(
-                                run_id,
-                                "extract",
-                                "stopped_early",
-                                page=counts["bookmark_pages"],
-                                archived_posts=len(post_ids),
-                            )
-                            break
-                        record = self.bronze.write_json(
-                            BronzeWriteRequest(
-                                run_id,
-                                "bookmarks-page",
-                                payload,
-                                "/2/users/{id}/bookmarks",
-                                cursor,
-                                post_ids,
-                                counts["bookmark_pages"],
-                            )
-                        )
-                        counts["posts"] += self.silver.apply_posts(
-                            run_id, record.object_id, payload
-                        )
-                        next_cursor = _next_token(payload)
-                        self.database.set_checkpoint(
-                            f"bookmarks:{user_id}", {"next_token": next_cursor}
-                        )
-                    else:
-                        next_cursor = _next_token(payload)
-                    if not next_cursor:
-                        break
-                    cursor = next_cursor
-                if not dry_run and max_pages is None:
-                    self._sync_folders_if_due(
-                        api,
-                        user_id,
-                        run_id,
-                        counts,
-                        FolderSyncOptions(ignore_folders, full),
-                    )
-                    self._archive_media_and_markdown(run_id, counts)
-                elif not dry_run:
-                    self._event(run_id, "pipeline", "folders_skipped", reason="bounded_sync")
-                if not dry_run:
-                    self.bronze.write_run_manifest(run_id)
-                self._record_usage(run_id, api, counts)
-                self._finish(run_id, "success", counts)
-                self._event(run_id, "pipeline", "completed", counts=counts)
+                request = SyncRequest(max_pages, dry_run, ignore_folders, full)
+                sync_run = SyncRun(api, user_id, run_id, counts, request)
+                self._read_bookmark_pages(sync_run, cursor)
+                self._finish_sync_stages(sync_run)
                 return {"run_id": run_id, **counts}
         except Exception as error:
             if api is not None:
@@ -339,6 +334,74 @@ class Pipeline:
             self._finish(run_id, "failed", counts, str(error))
             self._event(run_id, "pipeline", "failed", "error", error=str(error))
             raise
+
+    def _read_bookmark_pages(self, sync_run: SyncRun, cursor: str | None) -> None:
+        """Fetch bookmark pages and archive new posts."""
+        request = sync_run.request
+        counts = sync_run.counts
+        while request.max_pages is None or counts["bookmark_pages"] < request.max_pages:
+            payload = sync_run.api.bookmark_page(sync_run.user_id, cursor)
+            counts["bookmark_pages"] += 1
+            if not request.dry_run:
+                post_ids = _source_ids(payload)
+                if not request.full and post_ids and self._all_posts_known(post_ids):
+                    counts["stopped_early"] = 1
+                    self._event(
+                        sync_run.run_id,
+                        "extract",
+                        "stopped_early",
+                        page=counts["bookmark_pages"],
+                        archived_posts=len(post_ids),
+                    )
+                    break
+                counts["posts"] += self._archive_bookmark_page(sync_run, cursor, payload)
+            cursor = _next_token(payload)
+            if not cursor:
+                break
+
+    def _all_posts_known(self, post_ids: list[str]) -> bool:
+        """Return True when every post ID is already archived."""
+        return self.database.known_post_ids(post_ids) == set(post_ids)
+
+    def _archive_bookmark_page(
+        self, sync_run: SyncRun, cursor: str | None, payload: dict[str, Any]
+    ) -> int:
+        """Archive one bookmark page and persist its pagination cursor."""
+        post_ids = _source_ids(payload)
+        record = self.bronze.write_json(
+            BronzeWriteRequest(
+                sync_run.run_id,
+                "bookmarks-page",
+                payload,
+                "/2/users/{id}/bookmarks",
+                cursor,
+                post_ids,
+                sync_run.counts["bookmark_pages"],
+            )
+        )
+        archived = self.silver.apply_posts(sync_run.run_id, record.object_id, payload)
+        self.database.set_checkpoint(
+            f"bookmarks:{sync_run.user_id}", {"next_token": _next_token(payload)}
+        )
+        return archived
+
+    def _finish_sync_stages(self, sync_run: SyncRun) -> None:
+        """Run post-page stages and close out the successful sync."""
+        request = sync_run.request
+        if not request.dry_run and request.max_pages is None:
+            self._finalize_unbounded_sync(sync_run)
+        elif not request.dry_run:
+            self._event(
+                sync_run.run_id, "pipeline", "folders_skipped", reason="bounded_sync"
+            )
+            self._event(sync_run.run_id, "digest", "digest_skipped", reason="bounded_sync")
+        if not request.dry_run:
+            self.bronze.write_run_manifest(sync_run.run_id)
+        else:
+            self._event(sync_run.run_id, "digest", "digest_skipped", reason="dry_run")
+        self._record_usage(sync_run.run_id, sync_run.api, sync_run.counts)
+        self._finish(sync_run.run_id, "success", sync_run.counts)
+        self._event(sync_run.run_id, "pipeline", "completed", counts=sync_run.counts)
 
     def probe_post(self, url: str) -> dict[str, str | int]:
         """Fetch and archive exactly one canonical post URL."""

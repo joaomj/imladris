@@ -188,6 +188,45 @@ launchctl kickstart "gui/$(id -u)/com.x-digest.sync"
 
 See `tech-context.md`, section 17 for the agent behavior.
 
+## Weekly Telegram digest
+
+The Sunday sync also sends one private Telegram digest after Markdown files
+are written. OpenRouter summarizes the oldest undelivered posts as themed key
+points with source links. Delivery is best-effort: archive success never
+depends on the digest, and failed batches stay pending for the next run.
+
+Configure the bot and OpenRouter key in `.env`:
+
+```text
+TELEGRAM_BOT_TOKEN=your-bot-token
+TELEGRAM_USER_ID=your-chat-id
+XDIGEST_LLM_API_KEY=your-openrouter-key
+```
+
+`XDIGEST_TELEGRAM_BOT_TOKEN` and `XDIGEST_TELEGRAM_CHAT_ID` work as prefixed
+alternatives. Create the bot with `@BotFather`, send it `/start`, then read
+your chat ID from `getUpdates`:
+
+```bash
+curl "https://api.telegram.org/botYOUR_TOKEN/getUpdates"
+```
+
+Preview the next batch without network calls:
+
+```bash
+uv run x-digest digest --dry-run
+```
+
+The preview lists selected sources and layout only. Send the next pending
+batch manually:
+
+```bash
+uv run x-digest digest --send
+```
+
+Large weeks stay pending across runs. Remove digest credentials to disable
+notifications without changing the archive schedule.
+
 ## Backup to Google Cloud Storage (Free Tier)
 
 A weekly backup copies the `data/` directory to a private GCS bucket with
