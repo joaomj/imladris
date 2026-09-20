@@ -22,7 +22,7 @@ def _isolate_digest_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
     # both. Neutralize the fallback so tests never read developer keys.
     # delete_mock=True keeps module-level `import keyring` bindings intact.
     monkeypatch.setattr(keyring, "get_password", lambda _service, _account: None)
-    for module in ("x_digest.llm", "x_digest.telegram"):
+    for module in ("x_digest.config", "x_digest.llm", "x_digest.telegram"):
         monkeypatch.setattr(
             f"{module}.keyring.get_password", lambda _service, _account: None
         )

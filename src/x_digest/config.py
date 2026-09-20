@@ -3,12 +3,13 @@
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
+import keyring
 from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 DEFAULT_X_SCOPE = "bookmark.read tweet.read users.read offline.access"
 DEFAULT_LLM_BASE_URL = "https://openrouter.ai/api/v1"
-DEFAULT_LLM_MODEL = "openai/gpt-oss-120b"
+DEFAULT_LLM_MODEL = "z-ai/glm-5.3-flash"
 TELEGRAM_BOT_TOKEN_ACCOUNT = "telegram-bot-token"
 TELEGRAM_CHAT_ID_ACCOUNT = "telegram-chat-id"
 OPENROUTER_API_KEY_ACCOUNT = "openrouter-api-key"
@@ -72,6 +73,9 @@ class Settings(BaseSettings):
     llm_base_url: str = DEFAULT_LLM_BASE_URL
     llm_api_key: str | None = None
     llm_model: str = DEFAULT_LLM_MODEL
+    llm_reasoning_effort: Literal["xhigh", "high", "medium", "low", "minimal", "none"] = (
+        "low"
+    )
     llm_max_tokens: int = Field(default=1200, ge=100, le=4000)
     llm_timeout_seconds: float = Field(default=30.0, gt=0, le=120)
     digest_max_posts: int = Field(default=20, ge=1, le=50)
@@ -130,8 +134,15 @@ class Settings(BaseSettings):
         return bool(self.telegram_bot_token and self.telegram_chat_id)
 
     def llm_enabled(self) -> bool:
-        """Return True when an LLM API key is configured."""
-        return bool(self.llm_api_key)
+        """Return True when an LLM API key is configured in env or Keychain."""
+        if self.llm_api_key:
+            return True
+        try:
+            return bool(
+                keyring.get_password(self.keychain_service, OPENROUTER_API_KEY_ACCOUNT)
+            )
+        except Exception:
+            return False
 
 
 def load_settings() -> Settings:

@@ -76,6 +76,9 @@ def test_blank_credentials_become_missing(tmp_path: Path) -> None:
         "XDIGEST_TELEGRAM_BOT_TOKEN": "   ",
         "XDIGEST_TELEGRAM_CHAT_ID": "",
         "XDIGEST_LLM_API_KEY": "  ",
+        # Point at a missing Keychain service so llm_enabled() cannot see
+        # developer keys outside the blanked environment.
+        "XDIGEST_KEYCHAIN_SERVICE": "x-digest-test-missing",
         "TELEGRAM_BOT_TOKEN": "unused",
         "TELEGRAM_USER_ID": "unused",
     }

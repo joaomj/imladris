@@ -3,6 +3,8 @@
 from dataclasses import dataclass
 from typing import Any
 
+import requests
+
 from .config import Settings
 from .db import Database
 from .digest import DigestBuilder, DigestStore
@@ -13,10 +15,26 @@ from .telegram import TelegramSender
 DIGEST_ERROR_PREVIEW_CHARS = 500
 
 
+def _root_transport_error(error: Exception) -> Exception:
+    """Return the deepest wrapped requests error, guarding against cycles."""
+    seen: set[int] = set()
+    current = error
+    transport: Exception = error
+    while id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, requests.RequestException):
+            transport = current
+        cause = current.__cause__ or current.__context__
+        if cause is None or cause is current:
+            break
+        current = cause
+    return transport
+
+
 def _safe_error(error: Exception, sender: TelegramSender | None = None) -> str:
     """Return a sanitized error summary without secrets or response bodies."""
     if sender is not None:
-        details = sender.safe_details(error)
+        details = sender.safe_details(_root_transport_error(error))
         return str(details.get("category") or type(error).__name__)
     return type(error).__name__
 

@@ -213,6 +213,10 @@ TELEGRAM_USER_ID=your-chat-id
 XDIGEST_LLM_API_KEY=your-openrouter-key
 ```
 
+Prefer the macOS Keychain over `.env` for the OpenRouter key: store it
+under service `x-digest`, account `openrouter-api-key`. A set
+`XDIGEST_LLM_API_KEY` value takes precedence over the Keychain entry.
+
 `XDIGEST_TELEGRAM_BOT_TOKEN` and `XDIGEST_TELEGRAM_CHAT_ID` work as prefixed
 alternatives. Create the bot with `@BotFather`, send it `/start`, then read
 your chat ID from `getUpdates`:

@@ -533,8 +533,9 @@ limits when `Settings` loads.
 | `XDIGEST_TELEGRAM_CHAT_ID` | None | Telegram recipient chat ID. `TELEGRAM_USER_ID` is accepted as an alias. |
 | `XDIGEST_TELEGRAM_TIMEOUT_SECONDS` | `10.0` | Telegram request timeout. Range: greater than 0 and at most 60. |
 | `XDIGEST_LLM_BASE_URL` | `https://openrouter.ai/api/v1` | OpenAI-compatible LLM base URL. |
-| `XDIGEST_LLM_API_KEY` | None | OpenRouter API key. |
-| `XDIGEST_LLM_MODEL` | `openai/gpt-oss-120b` | Digest model routed to the cheapest Zero Data Retention provider. |
+| `XDIGEST_LLM_API_KEY` | None | OpenRouter API key. Falls back to the `openrouter-api-key` macOS Keychain entry. |
+| `XDIGEST_LLM_MODEL` | `z-ai/glm-5.3-flash` | Digest model routed to the cheapest Zero Data Retention provider. |
+| `XDIGEST_LLM_REASONING_EFFORT` | `low` | Reasoning effort sent as `reasoning.effort`. One of `xhigh`, `high`, `medium`, `low`, `minimal`, `none`. |
 | `XDIGEST_LLM_MAX_TOKENS` | `1200` | Maximum LLM response tokens. Range: 100 to 4000. |
 | `XDIGEST_LLM_TIMEOUT_SECONDS` | `30.0` | LLM request timeout. Range: greater than 0 and at most 120. |
 | `XDIGEST_DIGEST_MAX_POSTS` | `20` | Maximum posts per digest batch. Range: 1 to 50. |
@@ -1097,8 +1098,9 @@ newer posts retained in the backlog. The digest checkpoint
 and acknowledged chunk progress independently of archive runs.
 
 `DigestBuilder` requests structured JSON from OpenRouter model
-`openai/gpt-oss-120b` over `https://openrouter.ai/api/v1/chat/completions`
-with cheapest Zero Data Retention routing:
+`z-ai/glm-5.3-flash` over `https://openrouter.ai/api/v1/chat/completions`
+with low reasoning effort (`"reasoning": {"effort": "low"}`, tunable via
+`XDIGEST_LLM_REASONING_EFFORT`) and cheapest Zero Data Retention routing:
 
 ```json
 {"zdr": true, "provider": {"sort": "price", "zdr": true, "data_collection": "deny"}}

@@ -72,6 +72,7 @@ class LlmClient:
             ],
             "max_tokens": self.settings.llm_max_tokens,
             "temperature": LLM_TEMPERATURE,
+            "reasoning": {"effort": self.settings.llm_reasoning_effort},
             "zdr": True,
             "provider": {"sort": "price", "zdr": True, "data_collection": "deny"},
         }
@@ -113,9 +114,10 @@ class LlmClient:
                 raise ValueError("LLM response contained no text")
             return content.strip()
         if status not in RETRYABLE_STATUSES:
-            raise RuntimeError(
+            raise requests.HTTPError(
                 f"LLM request failed with HTTP {status}: "
-                f"{response.text[:ERROR_PREVIEW_CHARS]}"
+                f"{response.text[:ERROR_PREVIEW_CHARS]}",
+                response=response,
             )
         return status
 
@@ -170,6 +172,7 @@ class LlmClient:
             "model": self.settings.llm_model,
             "max_tokens": self.settings.llm_max_tokens,
             "temperature": LLM_TEMPERATURE,
+            "reasoning": {"effort": self.settings.llm_reasoning_effort},
             "zdr": True,
             "provider": {"sort": "price", "zdr": True, "data_collection": "deny"},
         }

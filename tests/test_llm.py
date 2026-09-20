@@ -15,6 +15,7 @@ from x_digest.logging_setup import JsonlLogger
 DUMMY_KEY = "dummy-openrouter-key"
 EXPECTED_TIMEOUT = 30.0
 EXPECTED_RETRY_CALLS = 2
+HTTP_UNAUTHORIZED = 401
 
 
 def _settings(vault: Path) -> Settings:
@@ -52,7 +53,8 @@ def test_llm_request_uses_zdr_cheapest_routing(
     assert captured["url"] == "https://openrouter.ai/api/v1/chat/completions"
     body = captured["json"]
     assert isinstance(body, dict)
-    assert body["model"] == "openai/gpt-oss-120b"
+    assert body["model"] == "z-ai/glm-5.3-flash"
+    assert body["reasoning"] == {"effort": "low"}
     assert body["zdr"] is True
     assert body["provider"] == {"sort": "price", "zdr": True, "data_collection": "deny"}
     assert captured["headers"]["Authorization"] == f"Bearer {DUMMY_KEY}"
@@ -113,3 +115,27 @@ def test_llm_missing_key_fails_without_network(
         assert "XDIGEST_LLM_API_KEY" in str(error)
     else:
         raise AssertionError("missing key must fail fast")
+
+
+def test_llm_non_retryable_status_carries_response(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = {"count": 0}
+
+    def fake_post(*args: Any, **kwargs: Any) -> SimpleNamespace:  # noqa: ARG001
+        calls["count"] += 1
+        return _response(HTTP_UNAUTHORIZED, text="expired key")
+
+    monkeypatch.setattr("x_digest.llm.requests.post", fake_post)
+    try:
+        LlmClient(_settings(tmp_path)).complete("prompt", "system")
+    except RuntimeError as error:
+        cause = error.__cause__
+        assert isinstance(cause, requests.HTTPError)
+        assert cause.response is not None
+        assert cause.response.status_code == HTTP_UNAUTHORIZED
+        assert "HTTP 401" in str(cause)
+        assert "http_401" in str(error)
+    else:
+        raise AssertionError("non-retryable status must raise")
+    assert calls["count"] == 1

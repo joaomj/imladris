@@ -2,14 +2,17 @@
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
+import requests
 
 from x_digest.config import Settings
-from x_digest.db import Database
+from x_digest.db import Database, utc_now
 from x_digest.digest_service import DigestContext, DigestDependencies, DigestService
 from x_digest.pipeline import Pipeline
+from x_digest.telegram import TelegramSender
 
 DUMMY_TOKEN = "dummy-bot-token"
 DUMMY_CHAT = "123456"
@@ -187,6 +190,44 @@ def test_sync_keeps_archive_success_when_digest_fails(tmp_path: Path) -> None:
         ).fetchone()[0]
     assert status["status"] == "success"
     assert failed == 1
+
+
+def test_digest_failed_preserves_wrapped_llm_status(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    database = Database(settings.database_path)
+    database.initialize()
+    with database.transaction() as connection:
+        connection.execute(
+            """INSERT INTO posts(post_id, username, created_at, url, text,
+               content_state, current_content_hash, first_seen_at, last_seen_at)
+               VALUES ('901', 'reader', '2026-08-01T00:00:00Z',
+               'https://x.com/reader/status/901', 'Digest failure post',
+               'complete', 'hash-901', ?, ?)""",
+            (utc_now(), utc_now()),
+        )
+    transport = requests.HTTPError(
+        "HTTP 401", response=SimpleNamespace(status_code=401, text="expired")
+    )
+
+    class FailingLlm:
+        def complete(self, _prompt: str, _system: str) -> str:
+            raise RuntimeError("LLM request failed: http_401") from transport
+
+    service = DigestService(
+        DigestContext(
+            settings=settings,
+            database=database,
+            correlation_id="failed-run",
+            dependencies=DigestDependencies(
+                llm=FailingLlm(),  # type: ignore[arg-type]
+                sender=TelegramSender(settings),
+            ),
+        )
+    )
+    counts: dict[str, int] = {}
+    result = service.deliver("failed-run", counts)
+    assert result == {"status": "failed", "error": "http_401"}
+    assert counts["digest_failed"] == 1
 
 
 def test_bounded_sync_never_sends_digest(tmp_path: Path) -> None:
