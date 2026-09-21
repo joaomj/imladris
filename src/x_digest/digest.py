@@ -5,7 +5,12 @@ import json
 import re
 from typing import Any
 
-from .config import Settings
+from .config import (
+    AUTO_IGNORE_ACCOUNTS_KEY,
+    Settings,
+    account_is_ignored,
+    effective_ignore_accounts,
+)
 from .db import Database
 
 DIGEST_CHECKPOINT_KEY = "digest:delivery"
@@ -105,6 +110,41 @@ class DigestStore:
         """Advance the cursor and drop any pending batch state."""
         self.save_state({"cursor": cursor, "pending_ids": None, "chunks": None, "next_chunk": 0})
 
+    def _account_clause(self) -> tuple[str, list[str]]:
+        """Return the SQL exclusion for ignored usernames and author IDs."""
+        auto_value = self.database.get_checkpoint(AUTO_IGNORE_ACCOUNTS_KEY)
+        auto = auto_value.get("author_ids") if isinstance(auto_value, dict) else None
+        ignored = effective_ignore_accounts(
+            self.settings.ignore_accounts,
+            auto if isinstance(auto, list) else None,
+        )
+        ignored = [entry.removeprefix("@") for entry in ignored if entry]
+        if not ignored:
+            return "", []
+        lowered = [entry.casefold() for entry in ignored]
+        user_placeholders = ",".join("?" * len(lowered))
+        id_placeholders = ",".join("?" * len(ignored))
+        clause = (
+            f"(username IS NULL OR LOWER(username) NOT IN ({user_placeholders}))"
+            f" AND (author_id IS NULL OR author_id NOT IN ({id_placeholders}))"
+        )
+        return clause, [*lowered, *ignored]
+
+    def _filtered_clause(
+        self, cursor: dict[str, str] | None
+    ) -> tuple[str, list[str]]:
+        """Combine the digest cursor with the account ignore exclusion."""
+        cursor_clause, cursor_params = self._cursor_clause(cursor)
+        account_clause, account_params = self._account_clause()
+        if cursor_clause and account_clause:
+            return (
+                f"{cursor_clause} AND {account_clause}",
+                [*cursor_params, *account_params],
+            )
+        if account_clause:
+            return f"WHERE {account_clause}", account_params
+        return cursor_clause, cursor_params
+
     @staticmethod
     def _cursor_clause(cursor: dict[str, str] | None) -> tuple[str, list[str]]:
         if cursor is None:
@@ -119,7 +159,7 @@ class DigestStore:
 
     def pending_count(self, cursor: dict[str, str] | None) -> int:
         """Count posts newer than the cursor."""
-        clause, params = self._cursor_clause(cursor)
+        clause, params = self._filtered_clause(cursor)
         with self.database.connect() as connection:
             row = connection.execute(
                 f"SELECT COUNT(*) AS total FROM posts {clause}", params
@@ -130,7 +170,7 @@ class DigestStore:
         self, cursor: dict[str, str] | None, limit: int
     ) -> tuple[list[dict[str, Any]], bool, int]:
         """Select the oldest pending posts with backlog metadata."""
-        clause, params = self._cursor_clause(cursor)
+        clause, params = self._filtered_clause(cursor)
         total = self.pending_count(cursor)
         with self.database.connect() as connection:
             rows = connection.execute(
@@ -159,7 +199,7 @@ class DigestStore:
         placeholders = ",".join("?" * len(post_ids))
         with self.database.connect() as connection:
             rows = connection.execute(
-                """SELECT post_id, username, url, text, note_text, article_body,
+                """SELECT post_id, author_id, username, url, text, note_text, article_body,
                           created_at, first_seen_at
                    FROM posts WHERE post_id IN ("""
                 + placeholders
@@ -167,7 +207,20 @@ class DigestStore:
                 post_ids,
             ).fetchall()
         by_id = {str(row["post_id"]): dict(row) for row in rows}
-        return [by_id[post_id] for post_id in post_ids if post_id in by_id]
+        ordered = [by_id[post_id] for post_id in post_ids if post_id in by_id]
+        auto_value = self.database.get_checkpoint(AUTO_IGNORE_ACCOUNTS_KEY)
+        auto = auto_value.get("author_ids") if isinstance(auto_value, dict) else None
+        ignored = effective_ignore_accounts(
+            self.settings.ignore_accounts,
+            auto if isinstance(auto, list) else None,
+        )
+        if ignored:
+            ordered = [
+                row
+                for row in ordered
+                if not account_is_ignored(row.get("username"), row.get("author_id"), ignored)
+            ]
+        return ordered
 
     @staticmethod
     def cursor_for(posts: list[dict[str, Any]]) -> dict[str, str] | None:

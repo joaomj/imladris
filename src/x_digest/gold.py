@@ -7,7 +7,12 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from .config import folder_is_ignored
+from .config import (
+    AUTO_IGNORE_ACCOUNTS_KEY,
+    effective_ignore_accounts,
+    filter_ignored_posts,
+    folder_is_ignored,
+)
 from .db import Database
 from .paths import resolve_stored_path, vault_root
 from .silver import SilverNormalizer
@@ -150,10 +155,40 @@ class GoldStore:
                     failed += 1
         return {"checked": checked, "failed": failed}
 
+    @staticmethod
+    def _rebuildable_posts(
+        payload: dict[str, Any],
+        context: dict[str, Any],
+        folder_names: dict[str, str],
+        ignore_folders: list[str] | None,
+        ignore_accounts: list[str] | None,
+    ) -> tuple[dict[str, Any], str | None, bool]:
+        """Return the payload, folder ID, and skip flag for one Bronze object."""
+        folder_id = context.get("folder_id")
+        if (
+            ignore_folders
+            and folder_id
+            and folder_is_ignored(
+                str(folder_id), folder_names.get(str(folder_id), ""), ignore_folders
+            )
+        ):
+            return payload, None, True
+        if ignore_accounts:
+            payload, _ = filter_ignored_posts(payload, ignore_accounts)
+        return payload, folder_id, False
+
     def rebuild_silver(
-        self, bronze_root: Path, ignore_folders: list[str] | None = None
+        self,
+        bronze_root: Path,
+        ignore_folders: list[str] | None = None,
+        ignore_accounts: list[str] | None = None,
     ) -> dict[str, int]:
         """Rebuild normalized tables from immutable Bronze objects."""
+        auto_value = self.database.get_checkpoint(AUTO_IGNORE_ACCOUNTS_KEY)
+        auto = auto_value.get("author_ids") if isinstance(auto_value, dict) else None
+        ignore_accounts = effective_ignore_accounts(
+            ignore_accounts, auto if isinstance(auto, list) else None
+        )
         with self.database.connect() as connection:
             media_state = {
                 str(row["media_key"]): (
@@ -223,14 +258,10 @@ class GoldStore:
                 )
             else:
                 context = json.loads(row["context_json"])
-                folder_id = context.get("folder_id")
-                if (
-                    ignore_folders
-                    and folder_id
-                    and folder_is_ignored(
-                        str(folder_id), folder_names.get(str(folder_id), ""), ignore_folders
-                    )
-                ):
+                payload, folder_id, skipped = self._rebuildable_posts(
+                    payload, context, folder_names, ignore_folders, ignore_accounts
+                )
+                if skipped:
                     continue
                 counts["posts"] += normalizer.apply_posts(
                     row["run_id"], row["object_id"], payload, folder_id

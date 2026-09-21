@@ -15,6 +15,21 @@ TELEGRAM_CHAT_ID_ACCOUNT = "telegram-chat-id"
 OPENROUTER_API_KEY_ACCOUNT = "openrouter-api-key"
 
 
+AUTO_IGNORE_ACCOUNTS_KEY = "ignore-accounts:auto"
+
+
+def effective_ignore_accounts(
+    configured: list[str] | None, automatic: list[str] | None
+) -> list[str]:
+    """Merge configured and auto-learned ignore entries, deduplicated in order."""
+    merged: list[str] = []
+    for entry in (*(configured or []), *(automatic or [])):
+        text = str(entry).strip()
+        if text and text not in merged:
+            merged.append(text)
+    return merged
+
+
 def folder_is_ignored(folder_id: str, name: str, ignore_folders: list[str]) -> bool:
     """Return True when a folder ID or name matches an ignore entry."""
     if not ignore_folders:
@@ -23,6 +38,85 @@ def folder_is_ignored(folder_id: str, name: str, ignore_folders: list[str]) -> b
         folder_id == str(ignored) or name.casefold() == str(ignored).casefold()
         for ignored in ignore_folders
     )
+
+
+def account_is_ignored(
+    username: str | None, author_id: str | None, ignore_accounts: list[str]
+) -> bool:
+    """Return True when a username or author ID matches an ignore entry.
+
+    Username matches are case-insensitive with an optional leading '@';
+    author ID matches are exact.
+    """
+    if not ignore_accounts:
+        return False
+    normalized_username = (
+        str(username).strip().removeprefix("@").casefold() if username else None
+    )
+    normalized_author = str(author_id).strip() if author_id else None
+    for raw in ignore_accounts:
+        entry = str(raw).strip().removeprefix("@")
+        if not entry:
+            continue
+        if normalized_username is not None and entry.casefold() == normalized_username:
+            return True
+        if normalized_author is not None and entry == normalized_author:
+            return True
+    return False
+
+
+def _username_for(
+    item: dict[str, Any], authors: dict[str, dict[str, Any]]
+) -> str | None:
+    """Resolve the username for one post item through the includes map."""
+    author = authors.get(str(item.get("author_id") or ""))
+    if isinstance(author, dict):
+        username = author.get("username")
+        return str(username) if username else None
+    return None
+
+
+def filter_ignored_posts(
+    payload: dict[str, Any], ignore_accounts: list[str]
+) -> tuple[dict[str, Any], int]:
+    """Return a copy of an API payload without ignored-account posts.
+
+    The input payload is never mutated so Bronze keeps the raw response
+    while Silver normalizes the filtered copy. Items without post metadata
+    (folder ID lists) are never dropped here.
+    """
+    if not ignore_accounts:
+        return payload, 0
+    data = payload.get("data")
+    wrapped = isinstance(data, dict)
+    items = [data] if wrapped else data
+    if not isinstance(items, list):
+        return payload, 0
+    includes = payload.get("includes")
+    users = includes.get("users") if isinstance(includes, dict) else None
+    authors = {
+        str(user.get("id")): user
+        for user in users or []
+        if isinstance(user, dict) and user.get("id")
+    }
+    kept: list[Any] = []
+    ignored = 0
+    for item in items:
+        if (
+            isinstance(item, dict)
+            and item.get("id")
+            and account_is_ignored(
+                _username_for(item, authors), item.get("author_id"), ignore_accounts
+            )
+        ):
+            ignored += 1
+            continue
+        kept.append(item)
+    if not ignored:
+        return payload, 0
+    filtered = dict(payload)
+    filtered["data"] = kept[0] if wrapped and kept else ([] if wrapped else kept)
+    return filtered, ignored
 
 
 def _find_project_root() -> Path:
@@ -57,6 +151,7 @@ class Settings(BaseSettings):
     media_max_bytes: int = Field(default=100_000_000, gt=0)
     media_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
     ignore_folders: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    ignore_accounts: Annotated[list[str], NoDecode] = Field(default_factory=list)
     folder_sync_days: int = Field(default=7, ge=0)
     log_level: Literal["debug", "info", "warning", "error"] = "info"
     log_max_bytes: int = Field(default=5_000_000, gt=0)
@@ -104,10 +199,10 @@ class Settings(BaseSettings):
         """Prevent an empty environment value from creating an invalid request."""
         return value.strip() if isinstance(value, str) and value.strip() else DEFAULT_X_SCOPE
 
-    @field_validator("ignore_folders", mode="before")
+    @field_validator("ignore_folders", "ignore_accounts", mode="before")
     @classmethod
-    def split_ignore_folders(cls, value: Any) -> list[str]:
-        """Accept a comma-separated list of folder names or IDs."""
+    def split_comma_separated_list(cls, value: Any) -> list[str]:
+        """Accept a comma-separated list of names or IDs."""
         if value is None:
             return []
         if isinstance(value, str):

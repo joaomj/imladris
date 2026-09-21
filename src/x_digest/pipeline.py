@@ -9,13 +9,20 @@ from typing import Any
 
 from .auth import authenticated_client
 from .bronze import BronzeWriter, BronzeWriteRequest
-from .config import Settings, folder_is_ignored
+from .config import (
+    AUTO_IGNORE_ACCOUNTS_KEY,
+    Settings,
+    effective_ignore_accounts,
+    filter_ignored_posts,
+    folder_is_ignored,
+)
 from .db import Database, utc_now
 from .digest_service import DigestContext, DigestDependencies, DigestService
 from .lock import ProcessLock
 from .logging_setup import JsonlLogger
 from .markdown import MarkdownWriter
 from .media import MediaDownloader
+from .paths import resolve_stored_path
 from .silver import SilverNormalizer
 from .x_api import MAX_POST_IDS_PER_REQUEST, XApi
 
@@ -27,6 +34,7 @@ class FolderSyncOptions:
     """Options controlling folder content hydration."""
 
     ignore_folders: list[str]
+    ignore_accounts: list[str]
     full: bool
 
 
@@ -38,6 +46,7 @@ class SyncRequest:
     dry_run: bool = False
     ignore_folders: list[str] | None = None
     full: bool = False
+    ignore_accounts: list[str] | None = None
 
 
 @dataclass
@@ -126,13 +135,20 @@ class Pipeline:
 
     def _finalize_unbounded_sync(self, sync_run: SyncRun) -> None:
         """Run folder sync, media, Markdown, and digest for a full sync."""
+        active_accounts = list(sync_run.request.ignore_accounts or [])
+        options = FolderSyncOptions(
+            sync_run.request.ignore_folders or [],
+            active_accounts,
+            sync_run.request.full,
+        )
         self._sync_folders_if_due(
             sync_run.api,
             sync_run.user_id,
             sync_run.run_id,
             sync_run.counts,
-            FolderSyncOptions(sync_run.request.ignore_folders or [], sync_run.request.full),
+            options,
         )
+        self._purge_blocked_posts(sync_run.run_id, active_accounts, sync_run.counts)
         self._archive_media_and_markdown(sync_run.run_id, sync_run.counts)
         self._send_digest(sync_run.run_id, sync_run.counts)
 
@@ -172,6 +188,7 @@ class Pipeline:
     ) -> None:
         """Archive folders and hydrate their post IDs in batches."""
         ignore_folders = options.ignore_folders
+        active_accounts = options.ignore_accounts
         full = options.full
         for folder_payload in api.folders(user_id):
             counts["folder_pages"] += 1
@@ -199,6 +216,9 @@ class Pipeline:
                         "folder_ignored",
                         folder_id=folder_id,
                         folder_name=str(folder.get("name", "")),
+                    )
+                    counts["accounts_auto_blocked"] += self._learn_folder_authors(
+                        api, user_id, run_id, folder_id, active_accounts
                     )
                     continue
                 folder_posts = api.folder_posts(user_id, folder_id)
@@ -237,6 +257,10 @@ class Pipeline:
                     batch_ids = to_fetch[offset : offset + MAX_POST_IDS_PER_REQUEST]
                     content_payload = api.posts(batch_ids)
                     counts["folder_content_batches"] += 1
+                    visible_payload, ignored = filter_ignored_posts(
+                        content_payload, active_accounts
+                    )
+                    counts["posts_ignored"] += ignored
                     content_record = self.bronze.write_json(
                         BronzeWriteRequest(
                             run_id,
@@ -250,8 +274,177 @@ class Pipeline:
                         )
                     )
                     self.silver.apply_posts(
-                        run_id, content_record.object_id, content_payload, folder_id
+                        run_id, content_record.object_id, visible_payload, folder_id
                     )
+
+    def _auto_blocked_author_ids(self) -> list[str]:
+        """Return author IDs previously learned from ignored folders."""
+        value = self.database.get_checkpoint(AUTO_IGNORE_ACCOUNTS_KEY)
+        if isinstance(value, dict) and isinstance(value.get("author_ids"), list):
+            return [str(entry) for entry in value["author_ids"] if str(entry).strip()]
+        return []
+
+    def _authors_of_posts(self, post_ids: list[str]) -> dict[str, str]:
+        """Map known post IDs to their author IDs."""
+        if not post_ids:
+            return {}
+        placeholders = ",".join("?" * len(post_ids))
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                f"SELECT post_id, author_id FROM posts WHERE post_id IN ({placeholders})"
+                " AND author_id IS NOT NULL",
+                post_ids,
+            ).fetchall()
+        return {str(row["post_id"]): str(row["author_id"]) for row in rows}
+
+    def _learn_folder_authors(
+        self,
+        api: Any,
+        user_id: str,
+        run_id: str,
+        folder_id: str,
+        active_accounts: list[str],
+    ) -> int:
+        """Block every author currently listed in an ignored folder.
+
+        Membership is the signal: any author with a post in the folder joins
+        the run's ignore set and is persisted for future runs. The lookup only
+        attributes authors, it never archives content, and a lookup failure
+        keeps the configured list working. Returns newly blocked authors.
+        """
+        try:
+            folder_post_ids = _source_ids(api.folder_posts(user_id, folder_id))
+        except Exception as error:
+            self._event(
+                run_id,
+                "extract",
+                "ignored_folder_lookup_failed",
+                level="warning",
+                folder_id=folder_id,
+                error=type(error).__name__,
+            )
+            return 0
+        if not folder_post_ids:
+            return 0
+        authors = self._authors_of_posts(folder_post_ids)
+        unknown = [post_id for post_id in folder_post_ids if post_id not in authors]
+        for offset in range(0, len(unknown), MAX_POST_IDS_PER_REQUEST):
+            batch = unknown[offset : offset + MAX_POST_IDS_PER_REQUEST]
+            try:
+                content = api.posts(batch)
+            except Exception as error:
+                self._event(
+                    run_id,
+                    "extract",
+                    "ignored_folder_lookup_failed",
+                    level="warning",
+                    folder_id=folder_id,
+                    error=type(error).__name__,
+                )
+                continue
+            data = content.get("data")
+            if isinstance(data, dict):
+                items: list[Any] = [data]
+            elif isinstance(data, list):
+                items = data
+            else:
+                items = []
+            for item in items:
+                if isinstance(item, dict) and item.get("id") and item.get("author_id"):
+                    authors[str(item["id"])] = str(item["author_id"])
+        blocked = {author_id for author_id in authors.values() if author_id}
+        fresh = sorted(author_id for author_id in blocked if author_id not in active_accounts)
+        if not fresh:
+            return 0
+        active_accounts.extend(fresh)
+        self.database.set_checkpoint(
+            AUTO_IGNORE_ACCOUNTS_KEY,
+            {"author_ids": sorted(set(self._auto_blocked_author_ids()) | set(fresh))},
+        )
+        self._event(
+            run_id,
+            "extract",
+            "ignored_folder_authors_blocked",
+            folder_id=folder_id,
+            authors=len(fresh),
+        )
+        return len(fresh)
+
+    def _purge_blocked_posts(
+        self, run_id: str, active_accounts: list[str], counts: dict[str, int]
+    ) -> None:
+        """Remove this run's Silver rows for blocked authors before delivery."""
+        blocked = {entry for entry in active_accounts if entry.isdigit()}
+        if not blocked:
+            return
+        placeholders = ",".join("?" * len(blocked))
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                "SELECT DISTINCT po.post_id AS post_id FROM post_observations po"
+                " JOIN posts p ON p.post_id = po.post_id WHERE po.run_id = ?"
+                f" AND p.author_id IN ({placeholders})",
+                [run_id, *blocked],
+            ).fetchall()
+        post_ids = [str(row["post_id"]) for row in rows]
+        if not post_ids:
+            return
+        purged = self._delete_posts(run_id, post_ids)
+        counts["posts_purged"] += purged
+        self._event(run_id, "extract", "blocked_posts_purged", posts=purged)
+
+    def _delete_posts(self, run_id: str, post_ids: list[str]) -> int:
+        """Delete Silver rows and local files for posts, returning the count."""
+        if not post_ids:
+            return 0
+        placeholders = ",".join("?" * len(post_ids))
+        with self.database.connect() as connection:
+            media_paths = [
+                str(row["archive_path"])
+                for row in connection.execute(
+                    f"SELECT archive_path FROM media WHERE post_id IN ({placeholders})"
+                    " AND archive_path IS NOT NULL",
+                    post_ids,
+                ).fetchall()
+            ]
+        with self.database.transaction() as connection:
+            for table in (
+                "bookmark_memberships",
+                "media",
+                "post_observations",
+                "post_versions",
+                "references_to_posts",
+                "posts_fts",
+                "posts",
+            ):
+                connection.execute(
+                    f"DELETE FROM {table} WHERE post_id IN ({placeholders})", post_ids
+                )
+        failures = 0
+        vault = self.settings.vault_path
+        for relative in media_paths:
+            try:
+                resolve_stored_path(vault, relative).unlink(missing_ok=True)
+            except OSError:
+                failures += 1
+        posts_dir = vault / "markdown" / "posts"
+        folders_dir = vault / "markdown" / "folders"
+        for post_id in post_ids:
+            try:
+                (posts_dir / f"{post_id}.md").unlink(missing_ok=True)
+                if folders_dir.exists():
+                    for target in folders_dir.glob(f"*/{post_id}.md"):
+                        target.unlink(missing_ok=True)
+            except OSError:
+                failures += 1
+        if failures:
+            self._event(
+                run_id,
+                "extract",
+                "blocked_post_file_cleanup_failed",
+                level="warning",
+                files=failures,
+            )
+        return len(post_ids)
 
     @staticmethod
     def _is_ignored_folder(folder: dict[str, Any], ignore_folders: list[str]) -> bool:
@@ -296,14 +489,23 @@ class Pipeline:
         dry_run: bool = False,
         ignore_folders: list[str] | None = None,
         full: bool = False,
+        ignore_accounts: list[str] | None = None,
     ) -> dict[str, int | str]:
         """Fetch bookmarks and folders, with an optional page bound."""
         if ignore_folders is None:
             ignore_folders = self.settings.ignore_folders
+        if ignore_accounts is None:
+            ignore_accounts = self.settings.ignore_accounts
+        ignore_accounts = effective_ignore_accounts(
+            ignore_accounts, self._auto_blocked_author_ids()
+        )
         run_id = self._start_run()
         counts = {
             "bookmark_pages": 0,
             "posts": 0,
+            "posts_ignored": 0,
+            "posts_purged": 0,
+            "accounts_auto_blocked": 0,
             "folder_pages": 0,
             "folder_posts": 0,
             "folder_content_batches": 0,
@@ -323,7 +525,7 @@ class Pipeline:
                 self._event(run_id, "extract", "authenticated", user_id=user_id)
                 cursor_value = self.database.get_checkpoint(f"bookmarks:{user_id}")
                 cursor = cursor_value.get("next_token") if isinstance(cursor_value, dict) else None
-                request = SyncRequest(max_pages, dry_run, ignore_folders, full)
+                request = SyncRequest(max_pages, dry_run, ignore_folders, full, ignore_accounts)
                 sync_run = SyncRun(api, user_id, run_id, counts, request)
                 self._read_bookmark_pages(sync_run, cursor)
                 self._finish_sync_stages(sync_run)
@@ -343,7 +545,12 @@ class Pipeline:
             payload = sync_run.api.bookmark_page(sync_run.user_id, cursor)
             counts["bookmark_pages"] += 1
             if not request.dry_run:
-                post_ids = _source_ids(payload)
+                # Ignored accounts never reach Silver, so they must not count
+                # as known posts for the incremental stop check.
+                visible, _ = filter_ignored_posts(
+                    payload, request.ignore_accounts or []
+                )
+                post_ids = _source_ids(visible)
                 if not request.full and post_ids and self._all_posts_known(post_ids):
                     counts["stopped_early"] = 1
                     self._event(
@@ -379,7 +586,11 @@ class Pipeline:
                 sync_run.counts["bookmark_pages"],
             )
         )
-        archived = self.silver.apply_posts(sync_run.run_id, record.object_id, payload)
+        visible, ignored = filter_ignored_posts(
+            payload, sync_run.request.ignore_accounts or []
+        )
+        sync_run.counts["posts_ignored"] += ignored
+        archived = self.silver.apply_posts(sync_run.run_id, record.object_id, visible)
         self.database.set_checkpoint(
             f"bookmarks:{sync_run.user_id}", {"next_token": _next_token(payload)}
         )
@@ -391,6 +602,9 @@ class Pipeline:
         if not request.dry_run and request.max_pages is None:
             self._finalize_unbounded_sync(sync_run)
         elif not request.dry_run:
+            self._purge_blocked_posts(
+                sync_run.run_id, request.ignore_accounts or [], sync_run.counts
+            )
             self._event(
                 sync_run.run_id, "pipeline", "folders_skipped", reason="bounded_sync"
             )

@@ -75,6 +75,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="skip one bookmark folder by name or ID; repeat to ignore several",
     )
     sync.add_argument(
+        "--ignore-account",
+        action="append",
+        default=[],
+        help="skip one X account by username or author ID; repeat to ignore several",
+    )
+    sync.add_argument(
         "--full",
         action="store_true",
         help="force a complete re-read and re-hydration of all folder content",
@@ -109,6 +115,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         help="skip one bookmark folder by name or ID; repeat to ignore several",
+    )
+    rebuild.add_argument(
+        "--ignore-account",
+        action="append",
+        default=[],
+        help="skip one X account by username or author ID; repeat to ignore several",
     )
     commands.add_parser(
         "markdown", help="write Markdown files for posts that do not have one yet"
@@ -217,7 +229,14 @@ def _handle_live(args: argparse.Namespace, settings: Any, correlation_id: str) -
     pipeline = Pipeline(settings, correlation_id=correlation_id)
     if args.command == "sync":
         ignore_folders = (args.ignore_folder or []) + settings.ignore_folders
-        result = pipeline.sync(args.max_pages, args.dry_run, ignore_folders or None, args.full)
+        ignore_accounts = (args.ignore_account or []) + settings.ignore_accounts
+        result = pipeline.sync(
+            max_pages=args.max_pages,
+            dry_run=args.dry_run,
+            ignore_folders=ignore_folders or None,
+            full=args.full,
+            ignore_accounts=ignore_accounts or None,
+        )
     elif args.command == "probe-bookmarks":
         result = pipeline.probe_bookmarks(args.max_results)
     else:
@@ -293,8 +312,11 @@ def _handle_gold(args: argparse.Namespace, settings: Any, correlation_id: str) -
         log.emit(correlation_id, "command_completed", "info", command="markdown", **result)
     elif args.command == "rebuild-silver":
         ignore_folders = (args.ignore_folder or []) + settings.ignore_folders
+        ignore_accounts = (args.ignore_account or []) + settings.ignore_accounts
         result = store.rebuild_silver(
-            settings.vault_path / "bronze", ignore_folders or None
+            settings.vault_path / "bronze",
+            ignore_folders or None,
+            ignore_accounts or None,
         )
         log.emit(
             correlation_id,

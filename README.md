@@ -98,6 +98,25 @@ Set the same list in `.env`:
 XDIGEST_IGNORE_FOLDERS=spam
 ```
 
+Skip X accounts by username or author ID. Matching posts are never archived,
+indexed, or digested:
+
+```bash
+uv run x-digest sync --ignore-account spammy
+```
+
+Set the same list in `.env` (local only, never committed):
+
+```text
+XDIGEST_IGNORE_ACCOUNTS=spammy,@other,1234567890
+```
+
+Author IDs are the stable choice: they survive handle renames. Ignoring a
+folder goes further — each sync learns every author currently listed in
+that folder and blocks them too, persisting the IDs in the local vault
+(`ignore-accounts:auto` checkpoint, never committed). Posts from blocked
+authors are purged before Markdown and digest delivery.
+
 ### Browse and export
 
 ```bash
@@ -149,6 +168,7 @@ settings:
 | `XDIGEST_X_CLIENT_SECRET` | Optional X client secret | None |
 | `XDIGEST_X_REDIRECT_URI` | OAuth callback URI | `http://localhost:8080/callback` |
 | `XDIGEST_IGNORE_FOLDERS` | Comma-separated folder names or IDs to skip | empty |
+| `XDIGEST_IGNORE_ACCOUNTS` | Comma-separated X usernames or author IDs to skip | empty |
 | `XDIGEST_FOLDER_SYNC_DAYS` | Minimum days between folder reads | `7` |
 | `XDIGEST_VAULT_PATH` | Vault location | `<project-root>/data` |
 | `XDIGEST_LOG_LEVEL` | Log level | `info` |
