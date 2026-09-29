@@ -12,6 +12,7 @@ from pydantic import ValidationError
 from requests import RequestException
 
 from .auth import AuthError, authorization_url, exchange_callback
+from .brave import BraveReaderError
 from .config import load_settings
 from .db import Database
 from .digest import DigestBuilder, DigestStore
@@ -21,6 +22,8 @@ from .lock import LockAlreadyHeld, ProcessLock
 from .logging_setup import JsonlLogger
 from .markdown import MarkdownWriter
 from .pipeline import Pipeline
+from .saved_fetch import SavedFetchError
+from .saved_pipeline import SavedPipeline
 
 
 def _print(value: Any) -> None:
@@ -45,6 +48,23 @@ def _print_error(error: Exception) -> int:
     """Print one machine-readable expected error to stderr."""
     print(json.dumps({"error": str(error)}, ensure_ascii=False), file=sys.stderr)
     return 1
+
+
+def _add_saved_commands(commands: Any) -> None:
+    """Register Brave saved-content commands on the subparser collection."""
+    brave_sync = commands.add_parser(
+        "brave-sync", help="snapshot the Brave reading list and fetch saved content"
+    )
+    brave_sync.add_argument("--profile", default=None, help="Brave profile name")
+    brave_sync.add_argument("--db-path", type=Path, default=None)
+    saved_search = commands.add_parser("saved-search", help="search saved content")
+    saved_search.add_argument("query")
+    saved_search.add_argument("--limit", type=int, default=20)
+    saved_show = commands.add_parser("saved-show", help="show one saved URL")
+    saved_show.add_argument("url")
+    saved_export = commands.add_parser("saved-export", help="export saved items")
+    saved_export.add_argument("--format", choices=("markdown", "json"), required=True)
+    saved_export.add_argument("--output", type=Path)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -122,9 +142,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="skip one X account by username or author ID; repeat to ignore several",
     )
-    commands.add_parser(
-        "markdown", help="write Markdown files for posts that do not have one yet"
-    )
+    commands.add_parser("markdown", help="write Markdown files for posts that do not have one yet")
     digest = commands.add_parser("digest", help="preview or send the weekly digest")
     digest_mode = digest.add_mutually_exclusive_group(required=True)
     digest_mode.add_argument(
@@ -148,6 +166,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="override llm_model for this delivery",
     )
+    _add_saved_commands(commands)
     return parser
 
 
@@ -216,9 +235,7 @@ def _handle_digest(args: argparse.Namespace, settings: Any, correlation_id: str)
     with ProcessLock(settings.lock_path):
         counts: dict[str, int] = {}
         result = DigestService(context).deliver(correlation_id, counts)
-    log.emit(
-        correlation_id, "command_completed", "info", command="digest", mode="send", **result
-    )
+    log.emit(correlation_id, "command_completed", "info", command="digest", mode="send", **result)
     _print(result)
     return 0 if result.get("status") in {"sent", "partial"} else 1
 
@@ -246,6 +263,117 @@ def _handle_live(args: argparse.Namespace, settings: Any, correlation_id: str) -
     return 0
 
 
+def _handle_saved_sync(args: argparse.Namespace, settings: Any, correlation_id: str) -> int:
+    log = _logger_for(settings)
+    log.emit(correlation_id, "command_started", "debug", command="brave-sync")
+    result = SavedPipeline(settings, correlation_id=correlation_id).sync(
+        profile=args.profile, db_path=args.db_path
+    )
+    log.emit(correlation_id, "command_completed", "info", command="brave-sync", result=result)
+    _print(result)
+    return 1 if any(result.get(key, 0) for key in ("failed", "exhausted", "fulltext_failed")) else 0
+
+
+def _handle_saved_search(args: argparse.Namespace, database: Database) -> list[dict[str, Any]]:
+    with database.connect() as connection:
+        try:
+            rows = connection.execute(
+                """SELECT s.url, s.title, s.fetch_state, s.final_url,
+                          ft.state AS fulltext_state, ft.archive_path AS fulltext_path
+                   FROM saved_items_fts f JOIN saved_items s ON s.url = f.url
+                   LEFT JOIN saved_fulltext ft ON ft.url=s.url
+                   WHERE saved_items_fts MATCH ? LIMIT ?""",
+                (args.query, args.limit),
+            ).fetchall()
+        except sqlite3.OperationalError as error:
+            message = str(error).lower()
+            if "fts5" not in message and "syntax" not in message:
+                raise
+            rows = connection.execute(
+                """SELECT s.url, s.title, s.fetch_state, s.final_url,
+                          ft.state AS fulltext_state, ft.archive_path AS fulltext_path
+                   FROM saved_items s LEFT JOIN saved_fulltext ft ON ft.url=s.url
+                   WHERE s.title LIKE ? OR s.content_text LIKE ? OR s.url LIKE ? LIMIT ?""",
+                (f"%{args.query}%", f"%{args.query}%", f"%{args.query}%", args.limit),
+            ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _saved_record(connection: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
+    """Expose the source record and its separate full-text artifact."""
+    record = dict(row)
+    fulltext = connection.execute(
+        "SELECT * FROM saved_fulltext WHERE url=?", (record["url"],)
+    ).fetchone()
+    record["fulltext"] = dict(fulltext) if fulltext is not None else None
+    if record["fulltext"] is not None:
+        record["fulltext"]["identifiers"] = json.loads(record["fulltext"].pop("identifiers_json"))
+    return record
+
+
+def _fulltext_markdown(record: dict[str, Any]) -> str:
+    fulltext = record.get("fulltext")
+    if fulltext is None:
+        return ""
+    lines = [f"Full text: {fulltext['state']}"]
+    for key in ("content_type", "archive_path", "provider", "license", "error"):
+        if fulltext.get(key):
+            lines.append(f"{key}: {fulltext[key]}")
+    return "\n\n".join(lines) + "\n\n"
+
+
+def _handle_saved_export(
+    args: argparse.Namespace, settings: Any, database: Database
+) -> dict[str, Any]:
+    output = args.output or settings.vault_path / "exports" / f"saved.{args.format}"
+    with database.connect() as connection:
+        rows = connection.execute(
+            "SELECT * FROM saved_items ORDER BY first_seen_at, url"
+        ).fetchall()
+        records = [_saved_record(connection, row) for row in rows]
+    output.parent.mkdir(parents=True, exist_ok=True)
+    if args.format == "json":
+        output.write_text(json.dumps(records, indent=2, ensure_ascii=False, default=str))
+    else:
+        blocks = [
+            f"# {record.get('title') or record['url']}\n\n"
+            f"Source: {record['url']}\n\n"
+            f"State: {record.get('fetch_state')}\n\n"
+            f"{_fulltext_markdown(record)}{record.get('content_text') or ''}"
+            for record in records
+        ]
+        output.write_text("\n\n---\n\n".join(blocks))
+    return {"output": str(output), "items": len(records)}
+
+
+def _handle_saved(args: argparse.Namespace, settings: Any, correlation_id: str) -> int:
+    if args.command == "brave-sync":
+        return _handle_saved_sync(args, settings, correlation_id)
+    log = _logger_for(settings)
+    log.emit(correlation_id, "command_started", "debug", command=args.command)
+    database = Database(settings.database_path)
+    database.initialize()
+    if args.command == "saved-search":
+        result: Any = _handle_saved_search(args, database)
+        log.emit(
+            correlation_id, "command_completed", "info", command="saved-search", matches=len(result)
+        )
+    elif args.command == "saved-show":
+        with database.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM saved_items WHERE url = ?", (args.url,)
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"saved URL not found: {args.url}")
+            result = _saved_record(connection, row)
+        log.emit(correlation_id, "command_completed", "info", command="saved-show", url=args.url)
+    else:
+        result = _handle_saved_export(args, settings, database)
+        log.emit(correlation_id, "command_completed", "info", command="saved-export", **result)
+    _print(result)
+    return 0
+
+
 def _handle_gold(args: argparse.Namespace, settings: Any, correlation_id: str) -> int:
     log = _logger_for(settings)
     log.emit(correlation_id, "command_started", "debug", command=args.command)
@@ -267,17 +395,13 @@ def _handle_gold(args: argparse.Namespace, settings: Any, correlation_id: str) -
         )
     elif args.command == "search":
         rows = store.search(args.query, args.limit)
-        log.emit(
-            correlation_id, "command_completed", "info", command="search", matches=len(rows)
-        )
+        log.emit(correlation_id, "command_completed", "info", command="search", matches=len(rows))
         result = rows
     elif args.command == "show":
         result = store.show(args.post_id)
         if result is None:
             raise ValueError(f"post not found: {args.post_id}")
-        log.emit(
-            correlation_id, "command_completed", "info", command="show", post_id=args.post_id
-        )
+        log.emit(correlation_id, "command_completed", "info", command="show", post_id=args.post_id)
     elif args.command == "export":
         output = args.output or settings.vault_path / "exports" / f"bookmarks.{args.format}"
         posts = store.export(output, args.format)
@@ -347,12 +471,16 @@ def main(argv: list[str] | None = None) -> int:
             return _handle_live(args, settings, correlation_id)
         if args.command == "digest":
             return _handle_digest(args, settings, correlation_id)
+        if args.command in {"brave-sync", "saved-search", "saved-show", "saved-export"}:
+            return _handle_saved(args, settings, correlation_id)
         return _handle_gold(args, settings, correlation_id)
     except (
         AuthError,
+        BraveReaderError,
         LockAlreadyHeld,
         OSError,
         RequestException,
+        SavedFetchError,
         sqlite3.Error,
         ValidationError,
         ValueError,

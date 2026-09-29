@@ -1,15 +1,14 @@
 # X Digest
 
-X Digest keeps a private, local copy of your X bookmarks. It reads data from
-the official X API, stores the raw responses and media, and builds a searchable
-SQLite catalog.
-
-The current version does not write posts, generate summaries, or use an LLM.
+X Digest archives X bookmarks and the Brave Reading List in local files and a
+searchable SQLite catalog. Collection does not modify X or Brave and does not
+use an LLM. An optional Telegram digest uses OpenRouter to summarize X posts.
 
 ## Key Capabilities
 
 - Private archive in the local `data/` directory.
-- Incremental bookmark sync.
+- Incremental X bookmark sync and read-only Brave Reading List collection.
+- PubMed metadata and licensed PMC full-text XML.
 - Bookmark folder archive with an ignore list.
 - One Markdown file per archived post.
 - Search, export, verify, and rebuild commands.
@@ -19,7 +18,11 @@ The current version does not write posts, generate summaries, or use an LLM.
 - macOS
 - Python 3.11 or newer
 - [`uv`](https://docs.astral.sh/uv/)
-- An X Developer application with OAuth 2.0 PKCE enabled
+- For X: an X Developer application with OAuth 2.0 PKCE enabled.
+- For Brave: a local Brave profile, Donsetch, and the optional `brave` extra.
+
+For Brave-only use, skip X configuration and authorization. See
+[Archive the Brave Reading List](#archive-the-brave-reading-list).
 
 ## Install
 
@@ -157,6 +160,86 @@ posts that still lack one, without any sync:
 uv run x-digest markdown
 ```
 
+### Archive the Brave Reading List
+
+Brave ingestion is separate from X bookmark sync and does not require X authorization.
+Install [Donsetch](https://github.com/dondai44423/donsetch) for webpage extraction.
+The command checks `PATH`, then `~/.local/bin/donsetch` for a user-local installation.
+Set `XDIGEST_DONSETCH_BIN` to select a different executable. A missing executable
+stops the run before reading Brave or consuming any item retries.
+The optional `brave` extra contains one pure-Python LevelDB reader; no system
+LevelDB or Snappy installation is required.
+
+```bash
+uv run --extra brave x-digest brave-sync --profile Default
+```
+
+Use `--db-path` to override the profile's `Sync Data/LevelDB` directory.
+Browse the local saved-content catalog without contacting websites:
+
+```bash
+uv run x-digest saved-search "education"
+uv run x-digest saved-show 'https://example.org/article'
+uv run x-digest saved-export --format json
+```
+
+`verify --full` includes archived PDFs and PMC XML. `rebuild-silver` also replays saved-content
+Bronze records. PDFs are searchable by saved title and URL, not by PDF text.
+
+The reader copies only the profile's LevelDB files into a temporary directory.
+It never opens the original files as a database or changes Brave settings or entries.
+Brave can remain open. The reader retries if the files change during copying;
+if it cannot obtain a stable copy, it reports an error.
+On macOS, the process that runs the command needs permission to read Brave's data.
+
+The workflow saves the URL-list snapshot in Bronze before fetching content:
+
+- Webpages: archive Donsetch's extraction response, including Markdown and metadata.
+- PubMed article URLs: fetch the exact PMID through the official NCBI EFetch API.
+  Archive the raw XML bytes as base64 and render the metadata and available abstract.
+  Bronze labels these results as `saved-api-record`, not webpage extractions or full papers.
+- PDFs: archive the original file bytes. Do not convert PDFs to Markdown.
+- Inaccessible pages: retain the saved URL and record the failure.
+
+Ordinary webpages use only the saved URL and normal HTTP redirects. Scholarly
+URLs have an approved exception: PubMed IDs, PMC IDs, and DOI URLs can identify
+the same paper through official APIs. The command does not infer papers from
+arbitrary page text, follow references, or crawl sites.
+
+Full-text retrieval uses PMC EFetch when a PMC ID is known from the saved URL
+or its PubMed record. DOI-only saves do not trigger a DOI-to-PMC search.
+No email, API key, or hosted discovery service is required. Licensed article XML
+is archived unchanged and separately from the saved record and its abstract.
+Linked figures are not downloaded. Explicitly saved PDFs still use the existing
+downloader and remain unchanged.
+
+Provider, source URL, license, format, hash, and diagnostics are retained in
+`saved-fulltext` Bronze records and the `saved_fulltext` table. Use `saved-show`
+or `saved-export` to inspect the full-text state and file path. If PMC full text
+cannot be obtained, the saved record remains available and the limitation is explicit.
+An `unavailable` result does not claim that no full text exists elsewhere and
+does not fail the sync. Network and malformed-response failures remain distinct
+and use at most `XDIGEST_SAVED_MAX_ATTEMPTS` total attempts; unresolved failures
+fail the sync.
+Downloaded and confirmed unavailable outcomes are not requested again on later runs.
+Set `XDIGEST_SAVED_FULLTEXT_ENABLED=false` to disable this additional retrieval.
+Successful PMC XML retrieval does not clear a failed original PDF download.
+Both outcomes remain visible, and the PDF failure still causes a nonzero exit.
+No hosted extraction fallbacks or LLM routing are used.
+
+X/Twitter and Reddit URLs remain in the snapshot but are excluded from webpage
+collection. X content belongs to the X bookmarks source. Existing archived
+content is preserved.
+Completed URLs are skipped on later runs. Metadata changes do not trigger another
+content fetch. Removing an item from Brave does not remove its archive.
+Failed URLs retry on subsequent runs, up to `XDIGEST_SAVED_MAX_ATTEMPTS` total
+attempts. Exhausted failures remain visible and cause a nonzero command exit.
+Truncated or empty extraction results are failures, not completed items.
+
+PDF text extraction and Brave digest delivery are not enabled by this command.
+The command does not install a schedule. To automate both sources, install the
+combined collection job described below.
+
 ## Configuration
 
 The complete settings list is in `tech-context.md`, section 7. Common `.env`
@@ -172,12 +255,13 @@ settings:
 | `XDIGEST_FOLDER_SYNC_DAYS` | Minimum days between folder reads | `7` |
 | `XDIGEST_VAULT_PATH` | Vault location | `<project-root>/data` |
 | `XDIGEST_LOG_LEVEL` | Log level | `info` |
+| `XDIGEST_SAVED_FULLTEXT_ENABLED` | Discover open-access full text for known scholarly identifiers | `true` |
 
 ## Local Storage
 
 ```text
 <project-root>/data/
-├── bronze/              # immutable API responses and media
+├── bronze/              # snapshots, responses, PDFs, XML, and media
 ├── silver.sqlite        # normalized records and search index
 ├── markdown/            # one Markdown file per archived post
 └── logs/                # aggregate and per-run logs
@@ -188,19 +272,26 @@ everything.
 
 ## Automated Weekly Sync
 
-Install the launchd agents, which run `x-digest sync` every Sunday at 06:00
-and the GCS backup at 06:15:
+Install the launchd agents for combined collection every Sunday at 06:00 and
+GCS backup at 06:15. The collection job runs X sync, then Brave sync. Both
+stages run even if one fails; the job reports failure if either stage fails.
+The backup waits for the combined job to finish, up to 30 minutes.
+
+Re-run the installer to replace an existing X-only job. It retains the same
+launchd label and schedule and does not start collection immediately.
+Brave uses `XDIGEST_BRAVE_PROFILE` or `Default`; Donsetch must be installed
+for the same macOS user. The launchd process must have permission to read
+Brave's profile. A successful Terminal run alone does not verify this access.
 
 ```bash
 ./scripts/install-scheduler.sh
 ./scripts/install-backup-scheduler.sh
 ```
 
-Macs that are off or locked at 06:00 miss the calendar run. The shell
-trigger covers that case: the first interactive shell each ISO week starts
+The optional shell trigger provides another way to start collection: the first interactive shell each ISO week starts
 the same two agents in the background after a 30-minute delay, once per
-week. It is already hooked into `~/.zshrc` via
-`scripts/zshrc-init.sh`, which calls `scripts/weekly-shell-trigger.sh`.
+week. To enable it, source `scripts/zshrc-init.sh` from `~/.zshrc`. The scheduler
+installer does not add this hook.
 Progress lands in `data/logs/weekly-trigger.log` with a once-per-week
 stamp at `data/logs/weekly-shell-trigger.stamp`.
 
@@ -361,7 +452,8 @@ See `tech-context.md`, section 14.2 for the backup details.
 The current version does not include:
 
 - X write operations.
-- Summaries or LLM processing.
+- LLM-based collection or Brave digest delivery.
+- PDF text extraction, general crawling, or full-text discovery outside PMC.
 - X data-export archive import.
 - A web interface.
 - Multiple X accounts.

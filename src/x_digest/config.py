@@ -50,9 +50,7 @@ def account_is_ignored(
     """
     if not ignore_accounts:
         return False
-    normalized_username = (
-        str(username).strip().removeprefix("@").casefold() if username else None
-    )
+    normalized_username = str(username).strip().removeprefix("@").casefold() if username else None
     normalized_author = str(author_id).strip() if author_id else None
     for raw in ignore_accounts:
         entry = str(raw).strip().removeprefix("@")
@@ -65,9 +63,7 @@ def account_is_ignored(
     return False
 
 
-def _username_for(
-    item: dict[str, Any], authors: dict[str, dict[str, Any]]
-) -> str | None:
+def _username_for(item: dict[str, Any], authors: dict[str, dict[str, Any]]) -> str | None:
     """Resolve the username for one post item through the includes map."""
     author = authors.get(str(item.get("author_id") or ""))
     if isinstance(author, dict):
@@ -168,14 +164,23 @@ class Settings(BaseSettings):
     llm_base_url: str = DEFAULT_LLM_BASE_URL
     llm_api_key: str | None = None
     llm_model: str = DEFAULT_LLM_MODEL
-    llm_reasoning_effort: Literal["xhigh", "high", "medium", "low", "minimal", "none"] = (
-        "low"
-    )
+    llm_reasoning_effort: Literal["xhigh", "high", "medium", "low", "minimal", "none"] = "low"
     llm_max_tokens: int = Field(default=1200, ge=100, le=4000)
     llm_timeout_seconds: float = Field(default=30.0, gt=0, le=120)
     digest_max_posts: int = Field(default=20, ge=1, le=50)
     digest_max_chars_per_post: int = Field(default=800, ge=100, le=4000)
     digest_prompt_max_chars: int = Field(default=12000, ge=2000, le=100000)
+    brave_profile: str | None = None
+    brave_db_path: Path | None = None
+    brave_snapshot_retries: int = Field(default=5, ge=0, le=5)
+    donsetch_bin: str = "donsetch"
+    donsetch_timeout_seconds: float = Field(default=150.0, gt=0, le=600)
+    donsetch_deadline_ms: int = Field(default=120000, ge=500, le=600000)
+    donsetch_max_chars: int = Field(default=500000, ge=1000, le=500000)
+    saved_fetch_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
+    saved_max_bytes: int = Field(default=25_000_000, gt=0)
+    saved_max_attempts: int = Field(default=3, ge=1, le=10)
+    saved_fulltext_enabled: bool = True
 
     @field_validator("telegram_bot_token", "telegram_chat_id", "llm_api_key", mode="before")
     @classmethod
@@ -233,9 +238,7 @@ class Settings(BaseSettings):
         if self.llm_api_key:
             return True
         try:
-            return bool(
-                keyring.get_password(self.keychain_service, OPENROUTER_API_KEY_ACCOUNT)
-            )
+            return bool(keyring.get_password(self.keychain_service, OPENROUTER_API_KEY_ACCOUNT))
         except Exception:
             return False
 

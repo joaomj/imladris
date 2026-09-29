@@ -118,6 +118,52 @@ CREATE TABLE IF NOT EXISTS media (
     first_seen_at TEXT NOT NULL,
     last_seen_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS saved_items (
+    url TEXT PRIMARY KEY,
+    entry_id TEXT,
+    title TEXT,
+    brave_creation_us INTEGER,
+    brave_update_us INTEGER,
+    brave_status INTEGER,
+    profile TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT 'brave_reading_list',
+    fetch_state TEXT NOT NULL DEFAULT 'pending',
+    fetch_error TEXT,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    content_type TEXT,
+    final_url TEXT,
+    content_hash TEXT,
+    bronze_object_id TEXT,
+    archive_path TEXT,
+    content_text TEXT,
+    truncated INTEGER NOT NULL DEFAULT 0,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    fetched_at TEXT
+);
+CREATE TABLE IF NOT EXISTS saved_fulltext (
+    url TEXT PRIMARY KEY REFERENCES saved_items(url) ON DELETE CASCADE,
+    state TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    identifiers_json TEXT NOT NULL,
+    provider TEXT,
+    source_url TEXT,
+    final_url TEXT,
+    content_type TEXT,
+    license TEXT,
+    version TEXT,
+    archive_path TEXT,
+    content_hash TEXT,
+    error TEXT,
+    bronze_object_id TEXT,
+    checked_at TEXT NOT NULL
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS saved_items_fts USING fts5(
+    url,
+    title,
+    content
+);
+CREATE INDEX IF NOT EXISTS idx_saved_items_state ON saved_items(fetch_state, attempts);
 CREATE TABLE IF NOT EXISTS references_to_posts (
     post_id TEXT NOT NULL REFERENCES posts(post_id),
     referenced_post_id TEXT NOT NULL,

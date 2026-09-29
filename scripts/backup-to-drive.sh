@@ -49,6 +49,27 @@ trap 'rm -rf "$STAGING"' EXIT
 
 mkdir -p "$LOG_DIR"
 log "backup start"
+# The calendar backup must also wait for both collection stages to finish.
+if [[ -f "$HOME/Library/LaunchAgents/com.x-digest.sync.plist" ]]; then
+    waited=0
+    while true; do
+        if ! sync_state="$(launchctl print "gui/$(id -u)/com.x-digest.sync" 2>&1)"; then
+            log "cannot inspect collection job; backup postponed"
+            echo "Cannot inspect com.x-digest.sync; backup postponed." >&2
+            exit 1
+        fi
+        if ! printf '%s\n' "$sync_state" | grep -Eq 'state = running|^[[:space:]]*pid = [0-9]+'; then
+            break
+        fi
+        if [[ "$waited" -ge 1800 ]]; then
+            log "collection still running after 30 minutes; backup postponed"
+            echo "Collection still running; backup postponed." >&2
+            exit 1
+        fi
+        sleep 30
+        waited=$((waited + 30))
+    done
+fi
 sqlite3 "$PROJECT_DIR/data/silver.sqlite" ".backup '$STAGING/silver.sqlite'"
 "$RCLONE_BIN" copy "$PROJECT_DIR/data/" "$DEST/" \
     --exclude "silver.sqlite*" \

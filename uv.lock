@@ -206,6 +206,15 @@ wheels = [
 ]
 
 [[package]]
+name = "chromium-reader"
+version = "0.1.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/42/77/e1829505f627eae41024aabc6dc82759a7efb72f5b247397c2a2bc80dc71/chromium_reader-0.1.1.tar.gz", hash = "sha256:bcaa2a5da80a6f76ffd1ff69892fc03304f0b31fbf858b98811cb4136e1e990d", size = 29524, upload-time = "2026-05-22T03:45:29.957Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/50/80/f79ae015062b097d5704e00d6ced135f38dff4e4a32823a43e7a3e0d475c/chromium_reader-0.1.1-py3-none-any.whl", hash = "sha256:bc32b23e4b5423ceec78b9161690474b434692a79ad522a1ae0311cbddb49a12", size = 29113, upload-time = "2026-05-22T03:45:28.171Z" },
+]
+
+[[package]]
 name = "colorama"
 version = "0.4.6"
 source = { registry = "https://pypi.org/simple" }
@@ -829,6 +838,9 @@ dependencies = [
 backup = [
     { name = "google-cloud-storage" },
 ]
+brave = [
+    { name = "chromium-reader" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -837,13 +849,14 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "chromium-reader", marker = "extra == 'brave'", specifier = "==0.1.1" },
     { name = "google-cloud-storage", marker = "extra == 'backup'", specifier = ">=2.10.0" },
     { name = "keyring", specifier = ">=25.7.0" },
     { name = "pydantic-settings", specifier = ">=2.14.2" },
     { name = "requests", specifier = ">=2.34.2" },
     { name = "xdk", specifier = ">=0.10.0" },
 ]
-provides-extras = ["backup"]
+provides-extras = ["brave", "backup"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=9.1.1" }]

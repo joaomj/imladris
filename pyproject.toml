@@ -12,6 +12,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+brave = ["chromium-reader==0.1.1"]
 backup = [
     "google-cloud-storage>=2.10.0",
 ]

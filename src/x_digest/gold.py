@@ -15,6 +15,7 @@ from .config import (
 )
 from .db import Database
 from .paths import resolve_stored_path, vault_root
+from .saved_store import SAVED_KINDS, rebuild_saved_from_bronze
 from .silver import SilverNormalizer
 
 
@@ -130,7 +131,13 @@ class GoldStore:
                 "SELECT path, payload_sha256, manifest_path FROM bronze_objects"
             ).fetchall()
             media = connection.execute(
-                "SELECT archive_path, sha256 FROM media WHERE archive_path IS NOT NULL"
+                """SELECT archive_path, sha256 FROM media WHERE archive_path IS NOT NULL
+                   UNION ALL
+                   SELECT archive_path, content_hash AS sha256 FROM saved_items
+                   WHERE archive_path IS NOT NULL
+                   UNION ALL
+                   SELECT archive_path, content_hash AS sha256 FROM saved_fulltext
+                   WHERE archive_path IS NOT NULL"""
             ).fetchall()
         for row in objects:
             checked += 1
@@ -177,7 +184,7 @@ class GoldStore:
             payload, _ = filter_ignored_posts(payload, ignore_accounts)
         return payload, folder_id, False
 
-    def rebuild_silver(
+    def rebuild_silver(  # noqa: PLR0912
         self,
         bronze_root: Path,
         ignore_folders: list[str] | None = None,
@@ -239,6 +246,8 @@ class GoldStore:
             with gzip.open(path, "rt", encoding="utf-8") as stream:
                 payload = json.load(stream)
             counts["objects"] += 1
+            if row["kind"] in SAVED_KINDS:
+                continue
             if row["kind"] == "folders":
                 data = payload.get("data") or []
                 if ignore_folders:
@@ -273,4 +282,5 @@ class GoldStore:
                        WHERE media_key=?""",
                     (status, path, digest, error, media_key),
                 )
+        rebuild_saved_from_bronze(self.database)
         return counts

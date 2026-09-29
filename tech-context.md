@@ -6,15 +6,17 @@ layout.
 
 ## 1. Overview
 
-X Digest is a local Python application that archives a user's X bookmarks. It
+X Digest is a local Python application that archives X bookmarks and the Brave
+Reading List. Brave collection uses a separate read-only pipeline (section 2.4). It
 uses the official X API through the Python XDK. It stores raw API responses,
 normalizes post data into SQLite, downloads referenced media, and provides a
 command-line interface for search, inspection, export, and verification.
 
 The application exists to keep a private copy of bookmarked posts independent
 of X availability. It is an archive, not a publishing client. The current
-version performs read operations only. It does not create posts, change
-bookmarks, generate summaries, or call an LLM.
+version does not create X posts, change bookmarks, or modify Brave. Collection
+does not call an LLM. The optional Telegram digest uses OpenRouter to summarize
+archived X posts.
 
 The main users are:
 
@@ -215,6 +217,60 @@ both post types.
 
 The probe exists because X Article response shapes needed direct inspection.
 The full Article body is currently extracted from `article.plain_text`.
+
+### 2.4 Brave Reading List collection
+
+Run `uv run --extra brave x-digest brave-sync`. X authorization is not required.
+Install Donsetch separately. The optional extra provides the pure-Python
+`chromium-reader==0.1.1`; no system LevelDB or Snappy installation is required.
+Donsetch is resolved from `PATH`, then `~/.local/bin/donsetch`, or the configured
+executable. Preflight failure does not consume item retries.
+
+The pipeline acquires the shared lock, copies the profile LevelDB files, and
+retries an unstable copy within the configured bound. The reader honors the
+manifest, active tables and logs, sequence numbers, and tombstones. It reads
+all Reading List entries regardless of read status. It never opens the live
+files as a database or changes Brave settings, entries, or read status. Brave
+can remain open. Malformed records and unstable copies cause explicit errors.
+
+`--profile` selects the profile; the fallback is `Default`. `--db-path` overrides
+`~/Library/Application Support/BraveSoftware/Brave-Browser/<profile>/Sync Data/LevelDB`.
+The temporary copy is removed after reading.
+
+The URL-list snapshot reaches Bronze before content requests. An unchanged
+snapshot hash is deduplicated. URL-keyed saved records retain completed content
+through metadata changes and deletion from Brave. X/Twitter and Reddit URLs
+remain in snapshots but are excluded from webpage collection, including
+redirects. Existing archived content is preserved.
+
+Ordinary webpages use the saved URL and normal redirects through Donsetch.
+The pipeline does not crawl sites or follow references. Exact PubMed URLs use
+NCBI EFetch for the same PMID. The raw XML is retained as base64, with readable
+metadata and any abstract. An abstract is not classified as a full paper.
+
+A PMC ID from the URL or PubMed record permits separate PMC EFetch retrieval.
+DOI-only saves do not trigger provider discovery. PMC retrieval validates the
+article identity, nonempty body, and recognized open license. XML bytes remain
+unchanged; linked figures are not downloaded. Explicitly saved PDFs also remain
+unchanged. There is no PDF text extraction. NCBI requests share a minimum
+0.4-second interval within the fetcher. No email or API key is required.
+
+Source fetch and full-text outcomes are independent. Each has at most
+`XDIGEST_SAVED_MAX_ATTEMPTS` total attempts across runs. Network errors,
+malformed responses, and empty or truncated extractions remain failures.
+Unresolved or exhausted failures cause a nonzero exit. A confirmed unavailable
+PMC result does not fail sync or imply that full text is unavailable elsewhere.
+Completed and unavailable results are not requested again. Successful PMC XML
+does not clear a failed download of the original saved PDF.
+
+| Modules | Responsibility |
+| --- | --- |
+| `brave.py`, `brave_leveldb.py` | Stable copy and strict Reading List decoding. |
+| `saved_pipeline.py` | Snapshot-first collection and run state. |
+| `saved_fetch.py`, `pubmed.py` | Webpage, PDF, and exact PubMed record retrieval. |
+| `saved_store.py`, `saved_urls.py` | Catalog, search, replay, and exclusions. |
+| `fulltext.py`, `fulltext_ids.py`, `fulltext_pmc.py` | Same-item identifiers and validated PMC retrieval. |
+| `fulltext_pipeline.py`, `fulltext_store.py` | Full-text retries, archival, and replay. |
 
 ## 3. Technology Stack
 
@@ -500,7 +556,7 @@ uv run x-digest verify --full
 ```
 
 `verify` checks Bronze compressed JSON and sidecar manifests. `verify --full`
-also checks hashes for downloaded media.
+also checks hashes for downloaded media, saved PDFs, and full-text XML.
 
 ### 6.7 Override the vault for tests or experiments
 
@@ -548,10 +604,27 @@ limits when `Settings` loads.
 | `XDIGEST_MEDIA_MAX_BYTES` | `100000000` | Maximum downloaded media size. |
 | `XDIGEST_MEDIA_TIMEOUT_SECONDS` | `30.0` | Media request timeout. Range: greater than 0 and at most 300. |
 | `XDIGEST_IGNORE_FOLDERS` | empty | Comma-separated bookmark folder names or IDs skipped by sync. |
+| `XDIGEST_IGNORE_ACCOUNTS` | empty | Comma-separated X usernames or author IDs excluded from archive and digest. |
 | `XDIGEST_FOLDER_SYNC_DAYS` | `7` | Minimum days between folder list and folder post reads. Range: 0 or more; 0 reads folders on every sync. |
 | `XDIGEST_LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warning`, or `error`. |
 | `XDIGEST_LOG_MAX_BYTES` | `5000000` | Maximum aggregate log file size before rotation. |
 | `XDIGEST_LOG_BACKUPS` | `5` | Number of rotated aggregate log files kept. |
+
+### 7.1 Reading List settings
+
+| Environment variable | Default | Purpose |
+| --- | --- | --- |
+| `XDIGEST_BRAVE_PROFILE` | `Default` fallback | Profile directory name. |
+| `XDIGEST_BRAVE_DB_PATH` | None | Override LevelDB directory. |
+| `XDIGEST_BRAVE_SNAPSHOT_RETRIES` | `5` | Stable-copy retries, 0 to 5. |
+| `XDIGEST_DONSETCH_BIN` | `donsetch` | Extraction executable. |
+| `XDIGEST_DONSETCH_TIMEOUT_SECONDS` | `150.0` | Subprocess timeout, greater than 0 and at most 600. |
+| `XDIGEST_DONSETCH_DEADLINE_MS` | `120000` | Extraction deadline, 500 to 600000 milliseconds. |
+| `XDIGEST_DONSETCH_MAX_CHARS` | `500000` | Extraction limit, 1000 to 500000 characters. |
+| `XDIGEST_SAVED_FETCH_TIMEOUT_SECONDS` | `30.0` | HTTP timeout, greater than 0 and at most 300. |
+| `XDIGEST_SAVED_MAX_BYTES` | `25000000` | Positive response size limit for downloads and API records. |
+| `XDIGEST_SAVED_MAX_ATTEMPTS` | `3` | Total attempts per source fetch or full-text lookup, 1 to 10. |
+| `XDIGEST_SAVED_FULLTEXT_ENABLED` | `true` | Retrieve licensed PMC XML separately from source records. |
 
 The computed paths are:
 
@@ -598,6 +671,14 @@ Readers also rebase legacy absolute Bronze paths when a vault is moved.
 | `posts_fts` | FTS5 virtual table | Indexes username, URL, and post content. |
 
 ### 8.3 Important fields
+
+`saved_items` uses the saved URL as its key. It stores saved metadata, extracted
+content, fetch state, attempts, error, provenance, and PDF path/hash.
+`saved_items_fts` indexes saved titles, URLs, and extracted text.
+`saved_fulltext` stores a separate URL-keyed outcome with identifiers, provider,
+license, format, file path/hash, attempts, and diagnostics. PDF and full-text
+XML bodies are not indexed as text.
+
 
 `posts.text` stores the normal X post text. `posts.note_text` stores Note Tweet
 text when the response provides it. `posts.article_body` stores Article body
@@ -681,6 +762,15 @@ collision error.
 - Use `verify --full` after file migration or backup restore.
 - Use `rebuild-silver` to repair derived records instead of editing Bronze.
 
+### 9.5 Saved-content records
+
+Reading List collection writes a snapshot, extracted pages, PubMed API records,
+PDF metadata, source failures, exclusions, and separate full-text outcomes.
+Their Bronze kinds are defined in `saved_store.py` and `fulltext_store.py`.
+PDF and PMC XML files retain their original bytes and stored hashes.
+`rebuild-silver` replays these records without contacting websites or changing
+source files. Source and full-text outcomes remain separate after replay.
+
 ## 10. Silver Normalization
 
 `SilverNormalizer` converts one Bronze API payload into relational records. It
@@ -751,7 +841,7 @@ be regenerated.
 
 `verify` decompresses each Bronze JSON file, recomputes its payload hash, and
 checks that the sidecar manifest exists. `verify --full` also hashes each
-archived media file and compares its stored hash.
+archived media file, saved PDF, and full-text file against its stored hash.
 
 The CLI returns exit code `1` when any check fails.
 
@@ -764,6 +854,14 @@ list filters folders and folder-scoped objects; see section 13.4.
 
 This command is destructive to derived Silver and FTS records. Run it only
 when no pipeline operation is active, and run `verify --full` afterward.
+
+### 11.7 Saved-content commands
+
+`saved-search QUERY` searches saved titles, URLs, and extracted text.
+`saved-show URL` shows a saved record and its separate full-text outcome.
+`saved-export --format json|markdown` exports the saved catalog; use
+`--output PATH` to write a file. These commands do not contact websites or
+require X authorization.
 
 ## 12. Authentication and Security
 
@@ -824,6 +922,38 @@ uses the current folder API response. A separate cadence checkpoint with key
 `folders:<user_id>` stores the last folder sync time as `{"synced_at": ...}`;
 `Pipeline._folders_due` decides when the interval configured by
 `XDIGEST_FOLDER_SYNC_DAYS` (default 7) has elapsed.
+
+### 13.3 Process lock
+
+`ProcessLock` creates `data/run.lock` with `O_CREAT | O_EXCL` and writes the
+owner process ID. A second pipeline operation raises `LockAlreadyHeld`.
+The context manager removes the lock after normal or failed execution.
+
+There is no automatic stale-lock recovery. Before removing a lock manually,
+confirm that the recorded process is no longer running.
+
+### 13.4 Media status
+
+Media download is independent from post capture. A failed media request marks
+that media row as `failed` while the post and raw response remain archived.
+The downloader currently selects only `pending` rows, so a failed item is not
+automatically retried by the next run.
+
+The downloader enforces a response size limit from both `Content-Length` and
+the number of bytes read. It guesses the file extension from content type,
+then URL suffix, then uses `.bin`.
+
+`rebuild-silver` preserves the download state: it snapshots the media table
+before deleting it and restores `status`, `archive_path`, `sha256`, and
+`error` for the re-created rows, so a rebuild never triggers re-downloads.
+Media rows that exist only in Silver (not in Bronze) are not re-created.
+
+`rebuild-silver` also honors the ignore list (`--ignore-folder` flag and
+`XDIGEST_IGNORE_FOLDERS`). Ignored folders are skipped in the folders-list
+pages, and Bronze objects whose context points at an ignored folder are not
+re-normalized, so an ignored folder and its posts cannot reappear after a
+rebuild. The matching logic lives in `config.folder_is_ignored` and is shared
+with the sync pipeline.
 
 ### 13.5 Incremental reads
 
@@ -897,41 +1027,9 @@ API access, so it consumes no X tokens. It is idempotent: it only creates
 missing files, which also backfills posts archived before this feature
 existed.
 
-### 13.3 Process lock
-
-`ProcessLock` creates `data/run.lock` with `O_CREAT | O_EXCL` and writes the
-owner process ID. A second pipeline operation raises `LockAlreadyHeld`.
-The context manager removes the lock after normal or failed execution.
-
-There is no automatic stale-lock recovery. Before removing a lock manually,
-confirm that the recorded process is no longer running.
-
-### 13.4 Media status
-
-Media download is independent from post capture. A failed media request marks
-that media row as `failed` while the post and raw response remain archived.
-The downloader currently selects only `pending` rows, so a failed item is not
-automatically retried by the next run.
-
-The downloader enforces a response size limit from both `Content-Length` and
-the number of bytes read. It guesses the file extension from content type,
-then URL suffix, then uses `.bin`.
-
-`rebuild-silver` preserves the download state: it snapshots the media table
-before deleting it and restores `status`, `archive_path`, `sha256`, and
-`error` for the re-created rows, so a rebuild never triggers re-downloads.
-Media rows that exist only in Silver (not in Bronze) are not re-created.
-
-`rebuild-silver` also honors the ignore list (`--ignore-folder` flag and
-`XDIGEST_IGNORE_FOLDERS`). Ignored folders are skipped in the folders-list
-pages, and Bronze objects whose context points at an ignored folder are not
-re-normalized, so an ignored folder and its posts cannot reappear after a
-rebuild. The matching logic lives in `config.folder_is_ignored` and is shared
-with the sync pipeline.
-
 ## 14. Manual Operations
 
-The application runs only when the owner invokes a CLI command. Normal
+Commands run manually or through the optional scheduler (section 17). Normal
 `sync` reads new bookmark pages incrementally, then folders and media.
 `sync --full` re-reads everything. `sync --max-pages N` is a bounded
 diagnostic option and skips folders and media; combine it with `--dry-run`
@@ -1022,7 +1120,9 @@ Git.
 The weekly backup uses `scripts/backup-to-drive.sh` with `rclone` to Google
 Cloud Storage. The bucket name and `rclone` remote come from
 `XDIGEST_BACKUP_BUCKET` and `XDIGEST_BACKUP_REMOTE` (defaults to `gcs`). The
-script:
+script waits for the installed combined collection job to stop. It aborts if
+launchd status cannot be read or collection remains active for 30 minutes. It
+then:
 
 1. Takes a consistent `sqlite3 .backup` snapshot of `silver.sqlite` into a
    temporary staging directory.
@@ -1068,27 +1168,6 @@ Run `scripts/backup-to-drive.sh` before you remove the source JSON file. A
 successful `data/logs/backup.log` ends with `backup end`. If the Keychain item
 is missing, `rclone` can use `service_account_file` from `rclone.conf`.
 
-## 15. Monitoring and Observability
-
-The application has three local observability records.
-
-### 15.1 Run records
-
-The `runs` table stores:
-
-- Run ID.
-- Start and completion times.
-- `running`, `success`, or `failed` status.
-- JSON counts.
-- Error text when a run fails.
-
-### 15.2 Run events
-
-The `run_events` table stores the run ID, stage, level, event name, timestamp,
-and JSON details. The pipeline writes events such as authentication success,
-completion, and failure. Digest delivery uses stage `digest` with events such
-as `digest_sent`, `digest_skipped`, `digest_partial`, and `digest_failed`.
-
 ### 14.3 Weekly Telegram content digest
 
 Unrestricted sync sends one digest batch after Markdown generation. A batch
@@ -1116,6 +1195,27 @@ messages. Each Telegram chunk uses a 10-second timeout; OpenRouter uses a
 30-second timeout. Both retry transient HTTP statuses once initially plus
 three retries with 1s, 2s, and 4s backoff. Logs retain status codes and error
 categories only, never tokens, chat IDs, keys, or response bodies.
+
+## 15. Monitoring and Observability
+
+The application has three local observability records.
+
+### 15.1 Run records
+
+The `runs` table stores:
+
+- Run ID.
+- Start and completion times.
+- `running`, `success`, or `failed` status.
+- JSON counts.
+- Error text when a run fails.
+
+### 15.2 Run events
+
+The `run_events` table stores the run ID, stage, level, event name, timestamp,
+and JSON details. The pipeline writes events such as authentication success,
+completion, and failure. Digest delivery uses stage `digest` with events such
+as `digest_sent`, `digest_skipped`, `digest_partial`, and `digest_failed`.
 
 ### 15.3 JSONL application log
 
@@ -1184,7 +1284,10 @@ The current tests cover:
 - FTS search.
 - Post inspection.
 - Media success and failure status.
-- Bronze and media hash verification.
+- Bronze, media, saved PDF, and full-text XML hash verification.
+- Brave snapshots, manifest-aware decoding, and malformed record errors.
+- Saved-content deduplication, exclusions, retries, and replay.
+- PubMed and PMC validation, including separate full-text outcomes.
 - Silver rebuild from Bronze.
 - `XDIGEST_VAULT_PATH` override.
 - Empty OAuth scope fallback.
@@ -1225,16 +1328,31 @@ bound and then run `verify --full`.
 
 There is no server deployment. The application runs on the owner's macOS user
 account. The CLI runs commands manually, and a launchd LaunchAgent runs
-`x-digest sync` weekly on Sunday at 06:00. The agent is installed with
+`scripts/sync-all.sh` weekly on Sunday at 06:00. The agent is installed with
 `scripts/install-scheduler.sh`, which writes the plist to
 `~/Library/LaunchAgents/com.x-digest.sync.plist` and loads it into the user
 session. The agent writes its output to `data/logs/scheduler.out.log` and
 `data/logs/scheduler.err.log`. Remove the agent with
 `scripts/install-scheduler.sh --remove`.
 
-The agent runs `uv run --project <project-root> x-digest sync` with the project
-directory as the working directory. It runs in the user session and reads the
-X token from the login Keychain. Launchd restarts the agent after a reboot.
+The wrapper runs X sync, then Brave sync, using an absolute uv executable and
+`--extra brave` for both stages. Both stages run even if one fails; either
+failure produces a nonzero exit. Sequential execution respects the shared lock.
+The working directory is the project root. X uses the login Keychain; Brave
+uses `XDIGEST_BRAVE_PROFILE` or `Default`.
+
+Re-run the installer to replace an existing X-only job. The label and log paths
+stay unchanged. `RunAtLoad=false` prevents immediate collection on installation
+or login. Updating code alone does not replace an installed plist. Donsetch must
+be available to the same macOS user. Launchd needs permission to read Brave;
+a successful Terminal run does not verify that permission.
+
+The optional `scripts/zshrc-init.sh` hook calls `scripts/weekly-shell-trigger.sh`.
+Source the hook from `~/.zshrc` to enable it. The first shell each ISO week
+starts collection after 1800 seconds. The trigger checks launchd state before
+starting backup and skips backup on inspection failure or a 30-minute timeout.
+The stamp and trigger log are in `data/logs/`. The stamp records dispatch, not
+successful collection, and does not suppress the separate calendar run.
 
 A second LaunchAgent runs the weekly Google Cloud Storage backup every Sunday
 at 06:15, after the sync agent. It is installed with
@@ -1264,7 +1382,10 @@ The following limits are part of the current version:
 - The application has no web interface.
 - The application performs no X write operations.
 - The application does not import X data-export archives.
-- The application does not generate summaries or use an LLM.
+- The optional LLM digest covers X posts only, not Brave saves.
+- Saved PDFs and PMC XML are not converted to searchable body text.
+- DOI-only saves do not trigger full-text discovery.
+- Blocked source URLs remain failures even when separate PMC XML is available.
 - The application does not support browser-cookie clients.
 - Folder-post retrieval uses the current XDK response and has no local folder
   pagination loop.

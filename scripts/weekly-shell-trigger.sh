@@ -34,30 +34,46 @@ fi
     log "start week $(current_week)"
     if command -v launchctl >/dev/null 2>&1; then
         if [ -f "$SYNC_PLIST" ]; then
-            launchctl start com.x-digest.sync >> "$PROJECT_DIR/data/logs/weekly-trigger.log" 2>&1 || log "sync start failed"
-        fi
-        # Wait for sync (up to 30 min) before backup so the archive is fresh.
-        # The sync agent exits after dispatching, so poll for completion by
-        # comparing the scheduler log instead of the process table.
-        waited=0
-        sync_marker_before="$(wc -c < "$PROJECT_DIR/data/logs/scheduler.out.log" 2>/dev/null || echo 0)"
-        while [ "$waited" -lt 1800 ]; do
-            sleep 60
-            waited=$((waited + 60))
-            sync_marker_after="$(wc -c < "$PROJECT_DIR/data/logs/scheduler.out.log" 2>/dev/null || echo 0)"
-            if [ "$sync_marker_after" != "$sync_marker_before" ]; then
-                break
+            if launchctl start com.x-digest.sync >> "$PROJECT_DIR/data/logs/weekly-trigger.log" 2>&1; then
+                # Allow launchd a moment to transition to running after
+                # `start` before inspecting, so a fast check does not
+                # mistake "not yet started" for "already finished".
+                sleep 10
+                SYNC_RESULT="timeout"
+                waited=0
+                while [ "$waited" -lt 1800 ]; do
+                    if print_out="$(launchctl print "gui/$(id -u)/com.x-digest.sync" 2>&1)"; then
+                        case "$print_out" in
+                            *"state = running"*)
+                                sleep 30
+                                waited=$((waited + 30))
+                                ;;
+                            *)
+                                SYNC_RESULT="done"
+                                break
+                                ;;
+                        esac
+                    else
+                        log "sync status check failed; skipping backup"
+                        SYNC_RESULT="status-failed"
+                        break
+                    fi
+                done
+                if [ "$SYNC_RESULT" = "done" ]; then
+                    if [ -f "$BACKUP_PLIST" ]; then
+                        launchctl start com.x-digest.backup >> "$PROJECT_DIR/data/logs/weekly-trigger.log" 2>&1 || log "backup start failed"
+                    fi
+                elif [ "$SYNC_RESULT" = "timeout" ]; then
+                    log "sync did not finish within 1800s; skipping backup"
+                fi
+            else
+                log "sync start failed; skipping backup"
             fi
-            if pgrep -f "x-digest sync" >/dev/null 2>&1; then
-                continue
+        else
+            log "sync agent not installed; skipping sync"
+            if [ -f "$BACKUP_PLIST" ]; then
+                launchctl start com.x-digest.backup >> "$PROJECT_DIR/data/logs/weekly-trigger.log" 2>&1 || log "backup start failed"
             fi
-            # No process and no new output after 3 min: assume sync finished fast.
-            if [ "$waited" -ge 180 ]; then
-                break
-            fi
-        done
-        if [ -f "$BACKUP_PLIST" ]; then
-            launchctl start com.x-digest.backup >> "$PROJECT_DIR/data/logs/weekly-trigger.log" 2>&1 || log "backup start failed"
         fi
     else
         log "launchctl not available"
