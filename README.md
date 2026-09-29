@@ -1,8 +1,12 @@
-# X Digest
+# Imladris
 
-X Digest archives X bookmarks and the Brave Reading List in local files and a
-searchable SQLite catalog. Collection does not modify X or Brave and does not
+Imladris is a local personal knowledge base. It archives X bookmarks and the
+Brave Reading List in files and a searchable SQLite catalog. Collection does not modify X or Brave and does not
 use an LLM. An optional Telegram digest uses OpenRouter to summarize X posts.
+
+The repository is named `imladris`. The Python package and CLI remain
+`x-digest`, with `XDIGEST_` settings and existing Keychain and launchd names.
+The rename does not require moving your archive or changing credentials.
 
 ## Key Capabilities
 
@@ -27,8 +31,8 @@ For Brave-only use, skip X configuration and authorization. See
 ## Install
 
 ```bash
-git clone https://github.com/joaomj/x-digest.git
-cd x-digest
+git clone https://github.com/joaomj/imladris.git
+cd imladris
 uv sync
 ```
 
@@ -290,8 +294,10 @@ Brave's profile. A successful Terminal run alone does not verify this access.
 
 The optional shell trigger provides another way to start collection: the first interactive shell each ISO week starts
 the same two agents in the background after a 30-minute delay, once per
-week. To enable it, source `scripts/zshrc-init.sh` from `~/.zshrc`. The scheduler
-installer does not add this hook.
+week. Before enabling the shell hook, set `_XDIGEST_TRIGGER` in
+`scripts/zshrc-init.sh` to your checkout’s `scripts/weekly-shell-trigger.sh` path.
+Then source `scripts/zshrc-init.sh` from `~/.zshrc`. The scheduler installer
+does not add this hook.
 Progress lands in `data/logs/weekly-trigger.log` with a once-per-week
 stamp at `data/logs/weekly-shell-trigger.stamp`.
 
