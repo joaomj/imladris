@@ -2,7 +2,10 @@
 
 This document is the engineering reference for Imladris. Read it before you
 change the data model, synchronization flow, authentication flow, or archive
-layout.
+layout. Run commands from the repository root.
+
+For setup, see [the README](../README.md). For routine commands, see
+[Usage](usage.md). For scheduling and backups, see [Operations](operations.md).
 
 ## 1. Overview
 
@@ -406,8 +409,11 @@ verification, and rebuild through `argparse`.
 imladris/
 ├── .env.example              # Local OAuth configuration template
 ├── .gitignore                # Excludes secrets, local data, and generated files
-├── README.md                 # User setup and command guide
-├── tech-context.md           # This engineering reference
+├── README.md                 # Setup guide
+├── docs/
+│   ├── usage.md              # Commands and collection behavior
+│   ├── operations.md         # Scheduling, digest, and backup setup
+│   └── tech-context.md       # This engineering reference
 ├── pyproject.toml            # Package metadata, dependencies, tools
 ├── uv.lock                   # Resolved dependency versions
 ├── data/                     # Local vault; ignored by Git
