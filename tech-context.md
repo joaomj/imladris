@@ -1,12 +1,12 @@
-# X Digest Technical Context
+# Imladris Technical Context
 
-This document is the engineering reference for X Digest. Read it before you
+This document is the engineering reference for Imladris. Read it before you
 change the data model, synchronization flow, authentication flow, or archive
 layout.
 
 ## 1. Overview
 
-X Digest is a local Python application that archives X bookmarks and the Brave
+Imladris is a local Python application that archives X bookmarks and the Brave
 Reading List. Brave collection uses a separate read-only pipeline (section 2.4). It
 uses the official X API through the Python XDK. It stores raw API responses,
 normalizes post data into SQLite, downloads referenced media, and provides a
@@ -34,7 +34,7 @@ must not be committed.
 
 ## 2. Architecture
 
-X Digest uses a local, three-layer data flow:
+Imladris uses a local, three-layer data flow:
 
 ```text
                  +----------------------+
@@ -403,7 +403,7 @@ verification, and rebuild through `argparse`.
 ## 5. Repository Layout
 
 ```text
-x-digest/
+imladris/
 ├── .env.example              # Local OAuth configuration template
 ├── .gitignore                # Excludes secrets, local data, and generated files
 ├── README.md                 # User setup and command guide
@@ -1405,7 +1405,7 @@ record before or with the code change.
 ## 19. Glossary
 
 **Article**
-: An X long-form post. X Digest stores its body in `posts.article_body` when
+: An X long-form post. Imladris stores its body in `posts.article_body` when
   the API returns extractable text.
 
 **Bronze**
