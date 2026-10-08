@@ -829,6 +829,7 @@ version = "0.2.1"
 source = { editable = "." }
 dependencies = [
     { name = "keyring" },
+    { name = "oauthlib" },
     { name = "pydantic-settings" },
     { name = "requests" },
     { name = "xdk" },
@@ -852,6 +853,7 @@ requires-dist = [
     { name = "chromium-reader", marker = "extra == 'brave'", specifier = "==0.1.1" },
     { name = "google-cloud-storage", marker = "extra == 'backup'", specifier = ">=2.10.0" },
     { name = "keyring", specifier = ">=25.7.0" },
+    { name = "oauthlib", specifier = ">=3.3.1" },
     { name = "pydantic-settings", specifier = ">=2.14.2" },
     { name = "requests", specifier = ">=2.34.2" },
     { name = "xdk", specifier = ">=0.10.0" },

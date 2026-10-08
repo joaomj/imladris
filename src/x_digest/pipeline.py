@@ -7,7 +7,9 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from .auth import authenticated_client
+import requests
+
+from .auth import AuthError, XAuthenticationError, authenticated_client
 from .bronze import BronzeWriter, BronzeWriteRequest
 from .config import (
     AUTO_IGNORE_ACCOUNTS_KEY,
@@ -24,7 +26,10 @@ from .markdown import MarkdownWriter
 from .media import MediaDownloader
 from .paths import resolve_stored_path
 from .silver import SilverNormalizer
+from .telegram import TelegramSender
 from .x_api import MAX_POST_IDS_PER_REQUEST, XApi
+
+HTTP_UNAUTHORIZED = 401
 
 POST_URL = re.compile(r"^https?://(?:www\.)?(?:x|twitter)\.com/[^/]+/status/(\d+)(?:[/?#].*)?$")
 
@@ -134,7 +139,7 @@ class Pipeline:
         self._event(run_id, "pipeline", "api_usage", level="info", **usage)
 
     def _finalize_unbounded_sync(self, sync_run: SyncRun) -> None:
-        """Run folder sync, media, Markdown, and digest for a full sync."""
+        """Run folder sync, media, and Markdown for a full sync."""
         active_accounts = list(sync_run.request.ignore_accounts or [])
         options = FolderSyncOptions(
             sync_run.request.ignore_folders or [],
@@ -150,7 +155,6 @@ class Pipeline:
         )
         self._purge_blocked_posts(sync_run.run_id, active_accounts, sync_run.counts)
         self._archive_media_and_markdown(sync_run.run_id, sync_run.counts)
-        self._send_digest(sync_run.run_id, sync_run.counts)
 
     def _send_digest(self, run_id: str, counts: dict[str, int]) -> None:
         """Deliver one pending digest batch without failing the archive run."""
@@ -516,19 +520,34 @@ class Pipeline:
         api: Any = None
         try:
             with ProcessLock(self.settings.lock_path):
-                api = self.api or XApi(
-                    authenticated_client(self.settings), self.settings, self.log, run_id
-                )
-                user_payload = api.current_user()
-                user_data = user_payload.get("data", {})
-                user_id = str(user_data["id"])
-                self._event(run_id, "extract", "authenticated", user_id=user_id)
-                cursor_value = self.database.get_checkpoint(f"bookmarks:{user_id}")
-                cursor = cursor_value.get("next_token") if isinstance(cursor_value, dict) else None
-                request = SyncRequest(max_pages, dry_run, ignore_folders, full, ignore_accounts)
-                sync_run = SyncRun(api, user_id, run_id, counts, request)
-                self._read_bookmark_pages(sync_run, cursor)
-                self._finish_sync_stages(sync_run)
+                try:
+                    api = self.api or XApi(
+                        authenticated_client(self.settings, self.log, run_id),
+                        self.settings,
+                        self.log,
+                        run_id,
+                    )
+                    user_payload = api.current_user()
+                    user_data = user_payload.get("data", {})
+                    user_id = str(user_data["id"])
+                    self._event(run_id, "extract", "authenticated", user_id=user_id)
+                    cursor_value = self.database.get_checkpoint(f"bookmarks:{user_id}")
+                    cursor = (
+                        cursor_value.get("next_token") if isinstance(cursor_value, dict) else None
+                    )
+                    request = SyncRequest(max_pages, dry_run, ignore_folders, full, ignore_accounts)
+                    sync_run = SyncRun(api, user_id, run_id, counts, request)
+                    self._read_bookmark_pages(sync_run, cursor)
+                    self._finish_sync_stages(sync_run)
+                except Exception as collection_error:
+                    if not dry_run and max_pages is None:
+                        self._recover_failed_collection(run_id, counts, collection_error)
+                    raise
+                if not dry_run and max_pages is None:
+                    self._send_digest(run_id, counts)
+                self._record_usage(run_id, api, counts)
+                self._finish(run_id, "success", counts)
+                self._event(run_id, "pipeline", "completed", counts=counts)
                 return {"run_id": run_id, **counts}
         except Exception as error:
             if api is not None:
@@ -536,6 +555,65 @@ class Pipeline:
             self._finish(run_id, "failed", counts, str(error))
             self._event(run_id, "pipeline", "failed", "error", error=str(error))
             raise
+
+    def _recover_failed_collection(
+        self, run_id: str, counts: dict[str, int], collection_error: Exception
+    ) -> None:
+        """Alert on lost X access and deliver archived posts before reporting failure."""
+        failures = [collection_error]
+        unauthorized = (
+            isinstance(collection_error, requests.HTTPError)
+            and collection_error.response is not None
+            and collection_error.response.status_code == HTTP_UNAUTHORIZED
+        )
+        if isinstance(collection_error, XAuthenticationError) or unauthorized:
+            if self.settings.telegram_enabled():
+                try:
+                    TelegramSender(self.settings, self.log, run_id).send_alert(
+                        "<b>Imladris: X authorization needs attention</b>\n\n"
+                        "X bookmark collection failed. Run <code>uv run x-digest auth</code> "
+                        "from the project directory and complete the browser login.\n\n"
+                        "Imladris will still attempt the next digest batch from archived posts."
+                    )
+                    counts["auth_alert_sent"] = 1
+                    self._event(run_id, "auth", "authentication_alert_sent")
+                except Exception as alert_error:
+                    failures.append(alert_error)
+                    counts["auth_alert_failed"] = 1
+                    self._event(
+                        run_id,
+                        "auth",
+                        "authentication_alert_failed",
+                        "error",
+                        category=type(alert_error).__name__,
+                    )
+            else:
+                self._event(
+                    run_id,
+                    "auth",
+                    "authentication_alert_skipped",
+                    "warning",
+                    reason="missing_telegram_config",
+                )
+        self._event(run_id, "digest", "archived_digest_after_collection_failure")
+        try:
+            self._send_digest(run_id, counts)
+            if counts.get("digest_failed"):
+                failures.append(AuthError("Archived digest delivery failed; batch remains pending"))
+        except Exception as digest_error:
+            failures.append(digest_error)
+            self._event(
+                run_id,
+                "digest",
+                "archived_digest_failed",
+                "error",
+                category=type(digest_error).__name__,
+            )
+        if len(failures) > 1:
+            raise AuthError(
+                "X collection failed; recovery also failed. "
+                "See authentication_alert_failed and digest failure events in the run log."
+            ) from ExceptionGroup("Collection and recovery failures", failures)
 
     def _read_bookmark_pages(self, sync_run: SyncRun, cursor: str | None) -> None:
         """Fetch bookmark pages and archive new posts."""
@@ -547,9 +625,7 @@ class Pipeline:
             if not request.dry_run:
                 # Ignored accounts never reach Silver, so they must not count
                 # as known posts for the incremental stop check.
-                visible, _ = filter_ignored_posts(
-                    payload, request.ignore_accounts or []
-                )
+                visible, _ = filter_ignored_posts(payload, request.ignore_accounts or [])
                 post_ids = _source_ids(visible)
                 if not request.full and post_ids and self._all_posts_known(post_ids):
                     counts["stopped_early"] = 1
@@ -586,9 +662,7 @@ class Pipeline:
                 sync_run.counts["bookmark_pages"],
             )
         )
-        visible, ignored = filter_ignored_posts(
-            payload, sync_run.request.ignore_accounts or []
-        )
+        visible, ignored = filter_ignored_posts(payload, sync_run.request.ignore_accounts or [])
         sync_run.counts["posts_ignored"] += ignored
         archived = self.silver.apply_posts(sync_run.run_id, record.object_id, visible)
         self.database.set_checkpoint(
@@ -597,7 +671,7 @@ class Pipeline:
         return archived
 
     def _finish_sync_stages(self, sync_run: SyncRun) -> None:
-        """Run post-page stages and close out the successful sync."""
+        """Run post-page archive stages without sending the digest."""
         request = sync_run.request
         if not request.dry_run and request.max_pages is None:
             self._finalize_unbounded_sync(sync_run)
@@ -605,17 +679,12 @@ class Pipeline:
             self._purge_blocked_posts(
                 sync_run.run_id, request.ignore_accounts or [], sync_run.counts
             )
-            self._event(
-                sync_run.run_id, "pipeline", "folders_skipped", reason="bounded_sync"
-            )
+            self._event(sync_run.run_id, "pipeline", "folders_skipped", reason="bounded_sync")
             self._event(sync_run.run_id, "digest", "digest_skipped", reason="bounded_sync")
         if not request.dry_run:
             self.bronze.write_run_manifest(sync_run.run_id)
         else:
             self._event(sync_run.run_id, "digest", "digest_skipped", reason="dry_run")
-        self._record_usage(sync_run.run_id, sync_run.api, sync_run.counts)
-        self._finish(sync_run.run_id, "success", sync_run.counts)
-        self._event(sync_run.run_id, "pipeline", "completed", counts=sync_run.counts)
 
     def probe_post(self, url: str) -> dict[str, str | int]:
         """Fetch and archive exactly one canonical post URL."""
@@ -626,7 +695,12 @@ class Pipeline:
         counts: dict[str, Any] = {"posts": 0}
         try:
             with ProcessLock(self.settings.lock_path):
-                api = XApi(authenticated_client(self.settings), self.settings, self.log, run_id)
+                api = XApi(
+                    authenticated_client(self.settings, self.log, run_id),
+                    self.settings,
+                    self.log,
+                    run_id,
+                )
                 payload = api.post(match.group(1))
                 record = self.bronze.write_json(
                     BronzeWriteRequest(
@@ -663,7 +737,12 @@ class Pipeline:
         counts: dict[str, Any] = {"posts": 0}
         try:
             with ProcessLock(self.settings.lock_path):
-                api = XApi(authenticated_client(self.settings), self.settings, self.log, run_id)
+                api = XApi(
+                    authenticated_client(self.settings, self.log, run_id),
+                    self.settings,
+                    self.log,
+                    run_id,
+                )
                 user_payload = api.current_user()
                 user_id = str(user_payload["data"]["id"])
                 bookmark_payload = api.bookmark_page(user_id, None, max_results)

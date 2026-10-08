@@ -173,7 +173,7 @@ def build_parser() -> argparse.ArgumentParser:
 def _handle_auth(args: argparse.Namespace, settings: Any, correlation_id: str) -> int:
     log = _logger_for(settings)
     if args.callback_url:
-        exchange_callback(settings, args.callback_url)
+        exchange_callback(settings, args.callback_url, log, correlation_id)
         log.emit(correlation_id, "token_exchanged", "info")
         print("X authorization stored in the macOS Keychain.")
     else:

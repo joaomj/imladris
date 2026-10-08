@@ -46,9 +46,12 @@ the agent behavior.
 
 ## Weekly Telegram digest
 
-The Sunday sync also sends one private Telegram digest after Markdown files
-are written. OpenRouter summarizes the oldest undelivered posts as themed key
-points with source links. Delivery is best-effort: archive success never
+The Sunday sync also sends one private Telegram digest after collection.
+If X collection fails, the sync still attempts the next batch from archived
+posts. The command continues to report the collection failure.
+
+OpenRouter summarizes the oldest undelivered posts as themed key points with
+source links. Delivery is best-effort: archive success never
 depends on the digest, and failed batches stay pending for the next run.
 
 Configure the bot and OpenRouter key in `.env`:
@@ -86,6 +89,33 @@ uv run x-digest digest --send
 
 Large weeks stay pending across runs. Remove digest credentials to disable
 notifications without changing the archive schedule.
+
+### X authentication failures
+
+If X rejects credential refresh or an API request returns HTTP 401, a normal
+unbounded sync sends a Telegram alert. The alert includes the authorization
+command. Alerts require Telegram credentials but do not require OpenRouter.
+Bounded syncs and dry runs do not send alerts or digests.
+
+Alert delivery uses one attempt to avoid duplicate alerts after an uncertain
+network response. If alert delivery fails, the sync records the failure and
+still attempts the archived digest. The command reports failure in either case.
+
+Token refresh and login callback saves use the same process lock. If a sync
+holds the lock, complete authorization after the sync ends. Start authorization
+again if the callback code expires while you wait.
+
+The application log records `oauth_refresh_started`, `oauth_token_saved`,
+`oauth_refresh_failed`, and `oauth_token_save_failed`. Successful saves include
+the access-token expiry time. Refresh saves also record whether the refresh
+token changed. These events do not include tokens, authorization codes, or
+callback URLs.
+
+Inspect these events in `data/logs/application.jsonl` or the corresponding
+file under `data/logs/runs/`. A refresh attempt without a saved-token event
+can indicate an interrupted refresh. The events cannot prove whether X issued
+a replacement before the interruption. X can also revoke access; local locking
+cannot prevent that action.
 
 ## Backup to Google Cloud Storage (Free Tier)
 

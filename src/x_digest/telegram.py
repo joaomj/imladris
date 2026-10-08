@@ -128,7 +128,7 @@ class TelegramSender:
         url = f"https://api.telegram.org/bot{token}/sendMessage"
         sent = 0
         for index in range(start, len(chunks)):
-            self._send_one(url, chat_id, chunks[index], index)
+            self._send_one(url, chat_id, chunks[index], index, MAX_ATTEMPTS)
             sent += 1
         return sent
 
@@ -141,7 +141,16 @@ class TelegramSender:
         sent = self.send_chunks(chunks, 0)
         return {"chunks": len(chunks), "sent": sent, "chat_id": str(chat_id)}
 
-    def _send_one(self, url: str, chat_id: str, chunk: str, index: int) -> None:
+    def send_alert(self, text: str) -> None:
+        """Send one short alert without retrying an uncertain delivery."""
+        if len(text) > TELEGRAM_CHUNK_LIMIT:
+            raise ValueError("alert exceeds Telegram message limit")
+        token, chat_id = self.resolve_credentials()
+        if not token or not chat_id:
+            raise ValueError("Telegram bot token and chat ID are required")
+        self._send_one(f"https://api.telegram.org/bot{token}/sendMessage", chat_id, text, 0, 1)
+
+    def _send_one(self, url: str, chat_id: str, chunk: str, index: int, max_attempts: int) -> None:
         """Send one chunk with explicit retries and sanitized logging."""
         body = {
             "chat_id": chat_id,
@@ -150,7 +159,7 @@ class TelegramSender:
             "disable_web_page_preview": False,
         }
         last_error: Exception | None = None
-        for attempt in range(MAX_ATTEMPTS):
+        for attempt in range(max_attempts):
             try:
                 response = requests.post(
                     url, json=body, timeout=self.settings.telegram_timeout_seconds
@@ -173,11 +182,10 @@ class TelegramSender:
                 last_error = error
                 status = (
                     error.response.status_code
-                    if isinstance(error, requests.RequestException)
-                    and error.response is not None
+                    if isinstance(error, requests.RequestException) and error.response is not None
                     else None
                 )
-                if not self._should_retry(status, attempt):
+                if attempt + 1 >= max_attempts or not self._should_retry(status, attempt):
                     self._log_failed(index, status, error)
                     raise RuntimeError(
                         f"Telegram send failed: {_error_category(status, error)}"
@@ -208,9 +216,7 @@ class TelegramSender:
             return attempt < MAX_ATTEMPTS - 1
         return status in RETRYABLE_STATUSES and attempt < MAX_ATTEMPTS - 1
 
-    def _log_retry(
-        self, index: int, attempt: int, status: int | None, error: Exception
-    ) -> None:
+    def _log_retry(self, index: int, attempt: int, status: int | None, error: Exception) -> None:
         """Log one retryable chunk failure without secrets."""
         if self.log:
             self.log.emit(

@@ -887,6 +887,12 @@ The flow has two CLI phases:
 The configured Keychain service is `x-digest` by default. The OAuth token uses
 the `oauth2` account. Temporary PKCE state uses the `pkce` account.
 
+Callback exchange and credential saves hold the same `data/run.lock` used by
+sync. A callback cannot replace credentials while a sync holds the lock.
+Refresh requests run once; the application saves the replacement credentials
+before it writes the successful-save event. Refresh attempts, rejected refreshes,
+and failed Keychain saves produce events without credential values.
+
 ### 12.2 Protected material
 
 - OAuth tokens are stored in the system credential store.
@@ -1176,7 +1182,9 @@ is missing, `rclone` can use `service_account_file` from `rclone.conf`.
 
 ### 14.3 Weekly Telegram content digest
 
-Unrestricted sync sends one digest batch after Markdown generation. A batch
+Unrestricted sync attempts one digest batch after collection. If collection
+fails, the sync still attempts the batch from archived posts and reports failure.
+Bounded syncs and dry runs do not send digests or authentication alerts. A batch
 contains the oldest undelivered posts, up to `XDIGEST_DIGEST_MAX_POSTS`, with
 newer posts retained in the backlog. The digest checkpoint
 `digest:delivery` in `checkpoints` tracks the cursor, frozen rendered chunks,
@@ -1201,6 +1209,15 @@ messages. Each Telegram chunk uses a 10-second timeout; OpenRouter uses a
 30-second timeout. Both retry transient HTTP statuses once initially plus
 three retries with 1s, 2s, and 4s backoff. Logs retain status codes and error
 categories only, never tokens, chat IDs, keys, or response bodies.
+
+Rejected credential refreshes and X API HTTP 401 responses also trigger a
+Telegram authentication alert. Alerts use one delivery attempt and do not
+require OpenRouter. If an alert fails, the sync records the failure and still
+attempts the archived digest. Collection and recovery errors remain available
+through the exception chain; the command continues to report failure.
+
+See [X authentication failures](operations.md#x-authentication-failures) for
+recovery instructions and the refresh log events.
 
 ## 15. Monitoring and Observability
 
