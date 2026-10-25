@@ -1,18 +1,19 @@
 """Validated application configuration."""
 
+import os
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-import keyring
 from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+from . import credentials
 
 DEFAULT_X_SCOPE = "bookmark.read tweet.read users.read offline.access"
 DEFAULT_LLM_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_LLM_MODEL = "z-ai/glm-5.3-flash"
 TELEGRAM_BOT_TOKEN_ACCOUNT = "telegram-bot-token"
 TELEGRAM_CHAT_ID_ACCOUNT = "telegram-chat-id"
-OPENROUTER_API_KEY_ACCOUNT = "openrouter-api-key"
 
 
 AUTO_IGNORE_ACCOUNTS_KEY = "ignore-accounts:auto"
@@ -115,6 +116,13 @@ def filter_ignored_posts(
     return filtered, ignored
 
 
+def _default_state_dir() -> Path:
+    """Return the directory for machine-local state such as OAuth tokens."""
+    root = os.environ.get("XDG_STATE_HOME")
+    base = Path(root) if root else Path.home() / ".local" / "state"
+    return base / "x-digest"
+
+
 def _find_project_root() -> Path:
     """Walk up from this file to find the project root with pyproject.toml."""
     current = Path(__file__).resolve()
@@ -140,6 +148,8 @@ class Settings(BaseSettings):
     x_redirect_uri: str = "http://localhost:8080/callback"
     x_scope: str = DEFAULT_X_SCOPE
     keychain_service: str = "x-digest"
+    secrets_vault: str | None = "your-vault"
+    state_dir: Path = Field(default_factory=_default_state_dir)
     max_results_per_page: int = Field(default=100, ge=1, le=100)
     max_retries: int = Field(default=3, ge=0, le=10)
     retry_base_seconds: float = Field(default=1.0, gt=0, le=60)
@@ -204,6 +214,20 @@ class Settings(BaseSettings):
         """Prevent an empty environment value from creating an invalid request."""
         return value.strip() if isinstance(value, str) and value.strip() else DEFAULT_X_SCOPE
 
+    @field_validator("secrets_vault", mode="before")
+    @classmethod
+    def blank_vault_disables_pass(cls, value: str | None) -> str | None:
+        """Treat an empty vault name as "do not read secrets from Proton Pass"."""
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("state_dir", mode="after")
+    @classmethod
+    def normalize_state_dir(cls, value: Path) -> Path:
+        """Resolve the state directory once so persisted paths are stable."""
+        return value.expanduser().resolve()
+
     @field_validator("ignore_folders", "ignore_accounts", mode="before")
     @classmethod
     def split_comma_separated_list(cls, value: Any) -> list[str]:
@@ -234,12 +258,18 @@ class Settings(BaseSettings):
         return bool(self.telegram_bot_token and self.telegram_chat_id)
 
     def llm_enabled(self) -> bool:
-        """Return True when an LLM API key is configured in env or Keychain."""
+        """Return True when an LLM API key is configured in env or Proton Pass."""
         if self.llm_api_key:
             return True
+        if not self.secrets_vault:
+            return False
         try:
-            return bool(keyring.get_password(self.keychain_service, OPENROUTER_API_KEY_ACCOUNT))
-        except Exception:
+            return bool(
+                credentials.read_field(
+                    self.secrets_vault, credentials.OPENROUTER_ITEM, credentials.OPENROUTER_FIELD
+                )
+            )
+        except credentials.CredentialError:
             return False
 
 

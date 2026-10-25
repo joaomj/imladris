@@ -76,9 +76,9 @@ def test_blank_credentials_become_missing(tmp_path: Path) -> None:
         "XDIGEST_TELEGRAM_BOT_TOKEN": "   ",
         "XDIGEST_TELEGRAM_CHAT_ID": "",
         "XDIGEST_LLM_API_KEY": "  ",
-        # Point at a missing Keychain service so llm_enabled() cannot see
-        # developer keys outside the blanked environment.
-        "XDIGEST_KEYCHAIN_SERVICE": "x-digest-test-missing",
+        # Disable the Proton Pass lookup so llm_enabled() cannot see
+        # developer secrets outside the blanked environment.
+        "XDIGEST_SECRETS_VAULT": "",
         "TELEGRAM_BOT_TOKEN": "unused",
         "TELEGRAM_USER_ID": "unused",
     }
@@ -104,7 +104,7 @@ def test_blank_credentials_become_missing(tmp_path: Path) -> None:
     assert result.stdout.splitlines() == ["None", "None", "None", "False", "False"]
 
 
-def test_settings_construct_directly_without_keyring() -> None:
+def test_settings_construct_directly_without_proton_pass() -> None:
     result = subprocess.run(
         [
             "uv",

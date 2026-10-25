@@ -80,7 +80,7 @@ Imladris uses a local, three-layer data flow:
 | --- | --- | --- |
 | CLI | `src/x_digest/cli.py` | Parse commands and route work to the pipeline or local store. |
 | Configuration | `src/x_digest/config.py` | Load and validate `XDIGEST_` settings. |
-| Authentication | `src/x_digest/auth.py` | Run OAuth 2.0 PKCE and use the macOS Keychain. |
+| Authentication | `src/x_digest/auth.py` | Run OAuth 2.0 PKCE and store the token in an owner-only state file. |
 | X API adapter | `src/x_digest/x_api.py` | Call the official XDK with timeouts and retries. |
 | Pipeline | `src/x_digest/pipeline.py` | Coordinate extraction, Bronze writes, normalization, media, checkpoints, and run state. |
 | Bronze writer | `src/x_digest/bronze.py` | Write immutable compressed JSON, manifests, and media. |
@@ -99,7 +99,7 @@ Imladris uses a local, three-layer data flow:
 1. Create a UUID for the run.
 2. Insert a `running` row into `runs`.
 3. Acquire `data/run.lock`.
-4. Load the X OAuth token from the macOS Keychain.
+4. Load the X OAuth token from `state_dir` (`~/.local/state/x-digest/oauth2.json`).
 5. Create the XDK client and refresh the token when it is expired.
 6. Call the authenticated-user endpoint.
 7. Load the bookmark cursor from `checkpoints`.
@@ -136,7 +136,7 @@ sequenceDiagram
     autonumber
     actor Owner
     participant CLI as x-digest CLI
-    participant Keychain as macOS Keychain
+    participant TokenFile as Token state file
     participant Pipeline
     participant X as Official X API
     participant Bronze
@@ -147,16 +147,16 @@ sequenceDiagram
     participant Logs as JSONL logs
 
     Owner->>CLI: Run auth
-    CLI->>Keychain: Store PKCE state
+    CLI->>TokenFile: Store PKCE state
     CLI-->>Owner: Show authorization URL
     Owner->>CLI: Submit callback URL
-    CLI->>Keychain: Store OAuth token
-    Note over Owner,Keychain: Authorization is completed once. Later runs reuse the token.
+    CLI->>TokenFile: Store OAuth token
+    Note over Owner,TokenFile: Authorization is completed once. Later runs reuse the token.
 
     Owner->>CLI: Run sync or probe
     CLI->>Pipeline: Start run
-    Pipeline->>Keychain: Load or refresh token
-    Keychain-->>Pipeline: Access token
+    Pipeline->>TokenFile: Load or refresh token
+    TokenFile-->>Pipeline: Access token
     Pipeline->>X: Read current user and bookmark pages
 
     loop Incremental bookmark pages
@@ -284,7 +284,8 @@ does not clear a failed download of the original saved PDF.
 | CLI | Python `argparse` | Entry point is `x-digest`. |
 | API client | `xdk` | `>=0.10.0`; use only official X API operations. |
 | Settings | `pydantic-settings` | `>=2.14.2`; environment prefix is `XDIGEST_`. |
-| Credential store | `keyring` | Uses the macOS Keychain backend on macOS. |
+| Static secrets | `pass-cli` | Reads Proton Pass fields from the machine's secrets vault. |
+| OAuth token | Owner-only JSON file | `state_dir/oauth2.json`, mode 0600. |
 | Database | SQLite | WAL mode and foreign keys are enabled. |
 | Search | SQLite FTS5 | Falls back to `LIKE` when an FTS query cannot run. |
 | HTTP transport | `requests` through XDK and `urllib` for media | API and media timeouts are configurable. |
@@ -493,9 +494,10 @@ run the second phase:
 uv run x-digest auth --callback-url 'http://localhost:8080/callback?code=...&state=...'
 ```
 
-The token and short-lived PKCE state are stored through `keyring`. On macOS,
-the normal backend is the Keychain. The token is not stored in SQLite, the
-Bronze archive, or the application log.
+The token and short-lived PKCE state are stored as owner-only files in
+`state_dir`: `oauth2.json` and `pkce.json`, written with mode 0600 by an
+atomic replace. The token is not stored in SQLite, the Bronze archive, or the
+application log.
 
 ### 6.4 Run the application
 
@@ -590,12 +592,14 @@ limits when `Settings` loads.
 | `XDIGEST_X_CLIENT_SECRET` | None | Optional X client secret. |
 | `XDIGEST_X_REDIRECT_URI` | `http://localhost:8080/callback` | OAuth callback URI. |
 | `XDIGEST_X_SCOPE` | `bookmark.read tweet.read users.read offline.access` | OAuth read scopes. |
-| `XDIGEST_KEYCHAIN_SERVICE` | `x-digest` | Keychain service name. |
+| `XDIGEST_KEYCHAIN_SERVICE` | `x-digest` | Keychain service name, used only for the optional Telegram token fallback. |
+| `XDIGEST_SECRETS_VAULT` | `your-vault` | Proton Pass vault that holds the static secrets. An empty value disables the lookup. |
+| `XDIGEST_STATE_DIR` | `$XDG_STATE_HOME/x-digest` | Directory for the OAuth token and PKCE state. |
 | `XDIGEST_TELEGRAM_BOT_TOKEN` | None | Telegram bot token. `TELEGRAM_BOT_TOKEN` is accepted as an alias. |
 | `XDIGEST_TELEGRAM_CHAT_ID` | None | Telegram recipient chat ID. `TELEGRAM_USER_ID` is accepted as an alias. |
 | `XDIGEST_TELEGRAM_TIMEOUT_SECONDS` | `10.0` | Telegram request timeout. Range: greater than 0 and at most 60. |
 | `XDIGEST_LLM_BASE_URL` | `https://openrouter.ai/api/v1` | OpenAI-compatible LLM base URL. |
-| `XDIGEST_LLM_API_KEY` | None | OpenRouter API key. Falls back to the `openrouter-api-key` macOS Keychain entry. |
+| `XDIGEST_LLM_API_KEY` | None | OpenRouter API key. Falls back to the `x-digest-openrouter` Proton Pass item. |
 | `XDIGEST_LLM_MODEL` | `z-ai/glm-5.3-flash` | Digest model routed to the cheapest Zero Data Retention provider. |
 | `XDIGEST_LLM_REASONING_EFFORT` | `low` | Reasoning effort sent as `reasoning.effort`. One of `xhigh`, `high`, `medium`, `low`, `minimal`, `none`. |
 | `XDIGEST_LLM_MAX_TOKENS` | `1200` | Maximum LLM response tokens. Range: 100 to 4000. |
@@ -876,22 +880,23 @@ require X authorization.
 The flow has two CLI phases:
 
 1. `authorization_url()` creates an XDK client, generates state, obtains the
-   XDK PKCE verifier, and stores verifier plus state in the Keychain.
+   XDK PKCE verifier, and stores verifier plus state in `pkce.json`.
 2. The user authorizes the app in a browser.
 3. `exchange_callback()` parses the copied callback URL.
 4. It compares the returned state with the stored state.
 5. It exchanges the code with the verifier.
-6. It stores the OAuth token in the Keychain and deletes the PKCE state.
+6. It stores the OAuth token in `oauth2.json` and deletes the PKCE state.
 7. `authenticated_client()` loads the token and refreshes it when expired.
 
-The configured Keychain service is `x-digest` by default. The OAuth token uses
-the `oauth2` account. Temporary PKCE state uses the `pkce` account.
+Both files live in `state_dir`, which defaults to
+`$XDG_STATE_HOME/x-digest`. They are readable only by the account that runs the
+service.
 
 Callback exchange and credential saves hold the same `data/run.lock` used by
 sync. A callback cannot replace credentials while a sync holds the lock.
 Refresh requests run once; the application saves the replacement credentials
 before it writes the successful-save event. Refresh attempts, rejected refreshes,
-and failed Keychain saves produce events without credential values.
+and failed token saves produce events without credential values.
 
 ### 12.2 Protected material
 
@@ -1105,9 +1110,10 @@ Check `content_state` and `article_body`. A complete Article body is stored in
 #### Move the project
 
 Copy the complete project directory, including `data/`. The default vault
-follows the directory that contains `pyproject.toml`. The Keychain token does
-not move with the files. Reuse the same Keychain service on the new machine or
-authorize the account again.
+follows the directory that contains `pyproject.toml`. The OAuth token in
+`state_dir` does not move with the files; copy it to the same path on the new
+machine or authorize the account again. Point `XDIGEST_SECRETS_VAULT` at the
+vault that holds the machine's secrets.
 
 ### 14.2 Backup and restore
 
@@ -1117,7 +1123,8 @@ Back up these items together:
 - `data/silver.sqlite`
 - `data/logs/` when operational history matters
 - The local `.env` through a separate secure secret process
-- The Keychain entry through the operating system account or reauthorization
+- `state_dir/oauth2.json` and the Proton Pass items, through reauthorization
+  or the operator's Proton Pass account
 
 After restore, run:
 
@@ -1153,32 +1160,27 @@ grows. A launchd agent runs the script every Sunday at 06:15, after the weekly
 sync. Install the agent with `scripts/install-backup-scheduler.sh` and remove
 it with `scripts/install-backup-scheduler.sh --remove`.
 
-Credentials are stored in the macOS login Keychain. The item uses service
-`x-digest` and account `gcs-backup-credentials`. The backup script runs
-`/usr/bin/security` with the explicit path
-`~/Library/Keychains/login.keychain-db`. It exports the result as
-`RCLONE_GCS_SERVICE_ACCOUNT_CREDENTIALS` for `rclone`.
+The service-account JSON is stored in Proton Pass as the hidden field
+`service-account-json` of the `x-digest-gcs-backup` item in the machine's
+secrets vault. The script runs `pass-cli item view` and exports the result as
+`RCLONE_GCS_SERVICE_ACCOUNT_CREDENTIALS` for `rclone`. A missing item or a
+failed read stops the backup instead of falling back silently.
 
-An SSH security session can select `/Library/Keychains/System.keychain` as its
-default keychain. This keychain is read-only for a normal user. Python
-`keyring.set_password()` does not specify the login-keychain path. The call can
-fail with OSStatus `-61`, which means `Write permissions error`.
+`pass-cli` needs `PROTON_PASS_KEY_PROVIDER` from the environment: both x-digest
+LaunchAgents set it, and a shell that sources the local profile has it too.
+Without it, `pass-cli` looks for the session key in the OS keyring and cannot
+open its local database.
 
-Unlock the login Keychain and store the credential with an explicit path:
+Create the item without putting the JSON on the command line:
 
 ```bash
-security unlock-keychain "$HOME/Library/Keychains/login.keychain-db"
-security add-generic-password \
-  -U \
-  -s x-digest \
-  -a gcs-backup-credentials \
-  -w "$(tr -d '\n' < "$HOME/.config/gcloud/your-key.json")" \
-  "$HOME/Library/Keychains/login.keychain-db"
+jq -Rs '{title: "x-digest-gcs-backup", note: "GCS service-account JSON for the monthly backup.", sections: [{section_name: "Credentials", fields: [{field_name: "service-account-json", field_type: "hidden", value: (rtrimstr("\n"))}]}]}' \
+  "$HOME/.config/gcloud/your-key.json" \
+  | pass-cli item create custom --vault-name your-vault --from-template -
 ```
 
 Run `scripts/backup-to-drive.sh` before you remove the source JSON file. A
-successful `data/logs/backup.log` ends with `backup end`. If the Keychain item
-is missing, `rclone` can use `service_account_file` from `rclone.conf`.
+successful `data/logs/backup.log` ends with `backup end`.
 
 ### 14.3 Weekly Telegram content digest
 
@@ -1361,8 +1363,8 @@ session. The agent writes its output to `data/logs/scheduler.out.log` and
 The wrapper runs X sync, then Brave sync, using an absolute uv executable and
 `--extra brave` for both stages. Both stages run even if one fails; either
 failure produces a nonzero exit. Sequential execution respects the shared lock.
-The working directory is the project root. X uses the login Keychain; Brave
-uses `XDIGEST_BRAVE_PROFILE` or `Default`.
+The working directory is the project root. X uses the token in `state_dir`;
+Brave uses `XDIGEST_BRAVE_PROFILE` or `Default`.
 
 Re-run the installer to replace an existing X-only job. The label and log paths
 stay unchanged. `RunAtLoad=false` prevents immediate collection on installation
@@ -1393,15 +1395,15 @@ release automation in the repository. A local release consists of:
 5. Commit the intended source and documentation changes.
 6. Push the branch when the owner requests it.
 
-Never stage `data/`, `.env`, Keychain exports, or inspection content that can
+Never stage `data/`, `.env`, secret exports, or inspection content that can
 contain personal X data.
 
 ## 18. Current Limitations
 
 The following limits are part of the current version:
 
-- The application supports one X account per local Keychain service.
-- The application supports macOS for Keychain behavior.
+- The application supports one X account per local state directory.
+- Static secrets assume Proton Pass and `pass-cli` are available.
 - The application has no web interface.
 - The application performs no X write operations.
 - The application does not import X data-export archives.

@@ -1,11 +1,12 @@
 """Isolate tests from local dotenv credentials."""
 
-import keyring
 import pytest
 
 
 @pytest.fixture(autouse=True)
-def _isolate_digest_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+def _isolate_digest_credentials(
+    monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
+) -> None:
     """Override dotenv-provided secrets with blank values.
 
     Pydantic-settings prioritizes environment variables over the `.env`
@@ -18,11 +19,9 @@ def _isolate_digest_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "")
     monkeypatch.setenv("TELEGRAM_USER_ID", "")
     monkeypatch.setenv("XDIGEST_LLM_API_KEY", "")
-    # Env vars outrank dotenv values, but keyring-backed secrets bypass
-    # both. Neutralize the fallback so tests never read developer keys.
-    # delete_mock=True keeps module-level `import keyring` bindings intact.
-    monkeypatch.setattr(keyring, "get_password", lambda _service, _account: None)
-    for module in ("x_digest.config", "x_digest.llm", "x_digest.telegram"):
-        monkeypatch.setattr(
-            f"{module}.keyring.get_password", lambda _service, _account: None
-        )
+    # Env vars outrank dotenv values, but a Proton Pass lookup bypasses both.
+    # Blank the vault so tests never read developer secrets or call pass-cli.
+    monkeypatch.setenv("XDIGEST_SECRETS_VAULT", "")
+    monkeypatch.setenv(
+        "XDG_STATE_HOME", str(tmp_path_factory.mktemp("state-home"))
+    )

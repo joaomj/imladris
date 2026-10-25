@@ -1,11 +1,12 @@
-"""OAuth 2.0 PKCE and macOS Keychain token storage."""
+"""OAuth 2.0 PKCE and owner-only file token storage."""
 
 import json
+import os
 import secrets
 import urllib.parse
+from pathlib import Path
 from typing import Any
 
-import keyring
 from oauthlib.oauth2 import OAuth2Error
 from xdk import Client
 
@@ -23,38 +24,49 @@ class XAuthenticationError(AuthError):
 
 
 class TokenStore:
-    """Store one OAuth token in the system credential store."""
+    """Store OAuth material in owner-only files under the state directory."""
 
     def __init__(self, settings: Settings) -> None:
-        self.service = settings.keychain_service
-        self.account = "oauth2"
-        self.pkce_account = "pkce"
+        self.directory = settings.state_dir
+        self.token_path = self.directory / "oauth2.json"
+        self.pkce_path = self.directory / "pkce.json"
 
     def load(self) -> dict[str, Any] | None:
         """Load the token, if it exists."""
-        value = keyring.get_password(self.service, self.account)
-        return json.loads(value) if value else None
+        return self._read(self.token_path)
 
     def save(self, token: dict[str, Any]) -> None:
-        """Save the token to the system credential store."""
-        keyring.set_password(self.service, self.account, json.dumps(token))
+        """Save the token to the state directory."""
+        self._write(self.token_path, token)
 
     def save_pkce(self, verifier: str, state: str) -> None:
         """Store the short-lived PKCE exchange state."""
-        keyring.set_password(
-            self.service,
-            self.pkce_account,
-            json.dumps({"verifier": verifier, "state": state}),
-        )
+        self._write(self.pkce_path, {"verifier": verifier, "state": state})
 
     def load_pkce(self) -> dict[str, str] | None:
-        """Load the short-lived PKCE exchange state."""
-        value = keyring.get_password(self.service, self.pkce_account)
-        return json.loads(value) if value else None
+        """Load the PKCE exchange state."""
+        return self._read(self.pkce_path)
 
     def clear_pkce(self) -> None:
-        """Remove the short-lived PKCE exchange state."""
-        keyring.delete_password(self.service, self.pkce_account)
+        """Remove the PKCE exchange state."""
+        self.pkce_path.unlink(missing_ok=True)
+
+    def _read(self, path: Path) -> dict[str, Any] | None:
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return None
+        except ValueError as error:
+            raise AuthError(f"{path} is not valid JSON: {error}") from error
+
+    def _write(self, path: Path, payload: dict[str, Any]) -> None:
+        self.directory.mkdir(parents=True, exist_ok=True)
+        self.directory.chmod(0o700)
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle)
+        os.replace(temporary, path)
 
 
 def build_client(
@@ -106,8 +118,9 @@ def build_client(
                 category=type(error).__name__,
             )
             raise XAuthenticationError(
-                "X refreshed access, but saving credentials to Keychain failed; "
-                "fix Keychain access and run uv run x-digest auth"
+                "X refreshed access, but saving the token to "
+                f"{TokenStore(settings).token_path} failed; fix the state directory "
+                "and run uv run x-digest auth"
             ) from error
         log.emit(
             correlation_id,

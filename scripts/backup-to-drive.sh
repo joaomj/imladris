@@ -30,14 +30,19 @@ if [[ ! -x "$RCLONE_BIN" ]]; then
     exit 1
 fi
 
-# Prefer macOS Keychain for GCS credentials. Use the explicit login keychain
-# because SSH sessions can default to the read-only System keychain.
-# Fallback is rclone.conf with service_account_file.
-LOGIN_KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
+# The GCS service-account JSON lives in Proton Pass. pass-cli needs the Proton
+# Pass environment the shell uses; the LaunchAgent sets PROTON_PASS_KEY_PROVIDER.
+GCS_CREDENTIAL_REFERENCE="pass://your-vault/x-digest-gcs-backup/service-account-json"
 if [[ -z "${RCLONE_GCS_SERVICE_ACCOUNT_CREDENTIALS:-}" ]]; then
-    if CREDENTIALS="$(security find-generic-password -s x-digest -a gcs-backup-credentials -w "$LOGIN_KEYCHAIN" 2>/dev/null)" && [[ -n "$CREDENTIALS" ]]; then
-        export RCLONE_GCS_SERVICE_ACCOUNT_CREDENTIALS="$CREDENTIALS"
+    if ! PASS_CLI="$(command -v pass-cli)"; then
+        echo "pass-cli was not found; it is required to read the backup credentials" >&2
+        exit 1
     fi
+    if ! CREDENTIALS="$("$PASS_CLI" item view "$GCS_CREDENTIAL_REFERENCE")" || [[ -z "$CREDENTIALS" ]]; then
+        echo "pass-cli could not read $GCS_CREDENTIAL_REFERENCE" >&2
+        exit 1
+    fi
+    export RCLONE_GCS_SERVICE_ACCOUNT_CREDENTIALS="$CREDENTIALS"
 fi
 
 log() {

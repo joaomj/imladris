@@ -3,10 +3,10 @@
 import time
 from typing import Any
 
-import keyring
 import requests
 
-from .config import OPENROUTER_API_KEY_ACCOUNT, Settings
+from . import credentials
+from .config import Settings
 from .logging_setup import JsonlLogger
 
 RETRYABLE_STATUSES = {429, 500, 502, 503, 504}
@@ -42,15 +42,14 @@ class LlmClient:
         self.correlation_id = correlation_id or "unknown"
 
     def resolve_api_key(self) -> str | None:
-        """Return the configured key, falling back to Keychain."""
+        """Return the configured key, falling back to Proton Pass."""
         if self.settings.llm_api_key:
             return self.settings.llm_api_key
-        try:
-            return keyring.get_password(
-                self.settings.keychain_service, OPENROUTER_API_KEY_ACCOUNT
-            )
-        except Exception:
+        if not self.settings.secrets_vault:
             return None
+        return credentials.read_field(
+            self.settings.secrets_vault, credentials.OPENROUTER_ITEM, credentials.OPENROUTER_FIELD
+        )
 
     def complete(self, prompt: str, system: str) -> str:
         """Request one completion and return the stripped response text."""

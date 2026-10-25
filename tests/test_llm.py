@@ -105,7 +105,6 @@ def test_llm_missing_key_fails_without_network(
         raise AssertionError("network must not be used")
 
     monkeypatch.setattr("x_digest.llm.requests.post", fail_post)
-    monkeypatch.setattr("x_digest.llm.keyring.get_password", lambda _s, _a: None)
     # delenv restores the dotenv value (env outranks .env only while set);
     # blank it instead so Settings sees an explicit missing credential.
     monkeypatch.setenv("XDIGEST_LLM_API_KEY", "")

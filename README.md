@@ -4,8 +4,8 @@ Imladris is a local personal knowledge base for X bookmarks and the Brave
 Reading List. This guide covers installation and the first collection run.
 
 The Python package and CLI are named `x-digest`. Settings use the `XDIGEST_`
-prefix. Existing archive paths, Keychain entries, and scheduler labels do not
-change with the repository name.
+prefix. Existing archive paths and scheduler labels do not change with the
+repository name.
 
 ## Requirements
 
@@ -65,7 +65,8 @@ Skip this section for Brave-only use.
    uv run x-digest auth --callback-url 'http://localhost:8080/callback?code=...&state=...'
    ```
 
-The OAuth token is stored in the macOS Keychain. Later commands reuse it.
+The OAuth token is stored in an owner-only file under
+`~/.local/state/x-digest/`. Later commands reuse it.
 
 Before collecting, configure any folder or account exclusions described in
 [Sync bookmarks](docs/usage.md#sync-bookmarks). Then run the first collection:

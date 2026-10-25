@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-import keyring
 import pytest
 import requests
 
@@ -32,35 +31,34 @@ PKCE_VERIFIER = "pkce-verifier-marker"
 
 
 class ExternalServices:
-    """Simulate HTTP and Keychain boundaries, not application collaborators."""
+    """Simulate HTTP boundaries and the on-disk token state."""
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self.keychain: dict[tuple[str, str], str] = {}
+        self.token_path = settings.state_dir / "oauth2.json"
+        self.pkce_path = settings.state_dir / "pkce.json"
         self.requests: list[requests.PreparedRequest] = []
         self.messages: list[str] = []
         self.reject_refresh = False
         self.reject_user = False
         self.alert_timeout = False
         self.alert_attempts = 0
-        self.keychain[(settings.keychain_service, "oauth2")] = json.dumps(
-            {
-                "access_token": OLD_ACCESS,
-                "refresh_token": OLD_REFRESH,
-                "token_type": "bearer",
-                "expires_at": 0,
-                "scope": DEFAULT_X_SCOPE,
-            }
+        self.token_path.parent.mkdir(parents=True, exist_ok=True)
+        self.token_path.write_text(
+            json.dumps(
+                {
+                    "access_token": OLD_ACCESS,
+                    "refresh_token": OLD_REFRESH,
+                    "token_type": "bearer",
+                    "expires_at": 0,
+                    "scope": DEFAULT_X_SCOPE,
+                }
+            ),
+            encoding="utf-8",
         )
 
-    def get_password(self, service: str, account: str) -> str | None:
-        return self.keychain.get((service, account))
-
-    def set_password(self, service: str, account: str, value: str) -> None:
-        self.keychain[(service, account)] = value
-
-    def delete_password(self, service: str, account: str) -> None:
-        del self.keychain[(service, account)]
+    def saved_token(self) -> dict[str, Any]:
+        return json.loads(self.token_path.read_text(encoding="utf-8"))
 
     def send(self, request: requests.PreparedRequest) -> requests.Response:
         self.requests.append(request)
@@ -136,7 +134,8 @@ def services(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Extern
     settings = Settings(
         _env_file=None,
         vault_path=tmp_path,
-        keychain_service="isolated-auth-regression",
+        state_dir=tmp_path / "state",
+        secrets_vault=None,
         x_client_id="isolated-client",
         **{
             "x_client_secret": CLIENT_SECRET,
@@ -147,9 +146,6 @@ def services(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Extern
     )
     boundary = ExternalServices(settings)
     monkeypatch.setattr("x_digest.cli.load_settings", lambda: settings)
-    monkeypatch.setattr(keyring, "get_password", boundary.get_password)
-    monkeypatch.setattr(keyring, "set_password", boundary.set_password)
-    monkeypatch.setattr(keyring, "delete_password", boundary.delete_password)
 
     def send(
         _session: requests.Session, request: requests.PreparedRequest, **_kwargs: Any
@@ -174,7 +170,7 @@ def test_refresh_persists_replacement_and_logs_without_credentials(
     services: ExternalServices, capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert main(["sync", "--max-pages", "1"]) == 0
-    saved = json.loads(services.keychain[(services.settings.keychain_service, "oauth2")])
+    saved = services.saved_token()
     assert saved["access_token"] == NEW_ACCESS
     assert saved["refresh_token"] == NEW_REFRESH
     events = services.log_events()
@@ -193,21 +189,20 @@ def test_refresh_persists_replacement_and_logs_without_credentials(
 def test_login_callback_cannot_overwrite_credentials_during_sync(
     services: ExternalServices, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    service = services.settings.keychain_service
-    services.keychain[(service, "pkce")] = json.dumps(
-        {"state": "login-state", "verifier": PKCE_VERIFIER}
+    services.pkce_path.write_text(
+        json.dumps({"state": "login-state", "verifier": PKCE_VERIFIER}), encoding="utf-8"
     )
-    before = dict(services.keychain)
+    before = services.saved_token()
     callback = f"http://localhost:8080/callback?state=login-state&code={LOGIN_CODE}"
     with ProcessLock(services.settings.lock_path):
         assert main(["auth", "--callback-url", callback]) == CLI_FAILURE
-        assert services.keychain == before
+        assert services.saved_token() == before
         assert services.requests == []
     assert main(["auth", "--callback-url", callback]) == 0
-    saved = json.loads(services.keychain[(service, "oauth2")])
+    saved = services.saved_token()
     assert saved["access_token"] == NEW_ACCESS
     assert saved["refresh_token"] == NEW_REFRESH
-    assert (service, "pkce") not in services.keychain
+    assert not services.pkce_path.exists()
     output = capsys.readouterr()
     logs = services.settings.log_path.read_text() + output.out + output.err
     for credential in (LOGIN_CODE, PKCE_VERIFIER, NEW_ACCESS, NEW_REFRESH):

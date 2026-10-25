@@ -62,9 +62,11 @@ TELEGRAM_USER_ID=your-chat-id
 XDIGEST_LLM_API_KEY=your-openrouter-key
 ```
 
-Prefer the macOS Keychain over `.env` for the OpenRouter key: store it
-under service `x-digest`, account `openrouter-api-key`. A set
-`XDIGEST_LLM_API_KEY` value takes precedence over the Keychain entry.
+Store the OpenRouter key in Proton Pass instead of `.env`: put it in the
+machine's secrets vault (`XDIGEST_SECRETS_VAULT`, `your-vault` by default) as
+the hidden field `api-key` of the custom item `x-digest-openrouter`. A set
+`XDIGEST_LLM_API_KEY` value takes precedence over the Proton Pass entry. Set
+`XDIGEST_SECRETS_VAULT` to an empty value to disable the lookup.
 
 `XDIGEST_TELEGRAM_BOT_TOKEN` and `XDIGEST_TELEGRAM_CHAT_ID` work as prefixed
 alternatives. Create the bot with `@BotFather`, send it `/start`, then read
@@ -137,36 +139,30 @@ Requirements:
   XDIGEST_BACKUP_REMOTE=gcs
   ```
 
-  The backup reads credentials from the macOS login Keychain. Store the service
-  account JSON under service `x-digest` and account `gcs-backup-credentials`:
+  The backup reads the service-account JSON from Proton Pass. Store it in the
+  machine's secrets vault as the hidden field `service-account-json` of the
+  custom item `x-digest-gcs-backup`:
 
   ```bash
   chmod 600 "$HOME/.config/gcloud/your-key.json"
-  security unlock-keychain "$HOME/Library/Keychains/login.keychain-db"
-  security add-generic-password \
-    -U \
-    -s x-digest \
-    -a gcs-backup-credentials \
-    -w "$(tr -d '\n' < "$HOME/.config/gcloud/your-key.json")" \
-    "$HOME/Library/Keychains/login.keychain-db"
+  jq -Rs '{title: "x-digest-gcs-backup", note: "GCS service-account JSON for the monthly backup.", sections: [{section_name: "Credentials", fields: [{field_name: "service-account-json", field_type: "hidden", value: (rtrimstr("\n"))}]}]}' \
+    "$HOME/.config/gcloud/your-key.json" \
+    | pass-cli item create custom --vault-name your-vault --from-template -
   ```
 
-  An SSH session can use the read-only System keychain by default. The explicit
-  login-keychain path prevents `-61 Write permissions error` during setup.
+  `pass-cli` runs under launchd with a minimal environment, so both x-digest
+  jobs set `PROTON_PASS_KEY_PROVIDER`. Without it `pass-cli` looks for the
+  session key in the OS keyring and cannot open its local database.
 
   Verify the stored JSON without printing it:
 
   ```bash
-  security find-generic-password \
-    -s x-digest \
-    -a gcs-backup-credentials \
-    -w \
-    "$HOME/Library/Keychains/login.keychain-db" \
-    | uv run python -c "import json,sys; d=json.load(sys.stdin); print('Keychain OK:', d.get('type') == 'service_account')"
+  pass-cli item view 'pass://your-vault/x-digest-gcs-backup/service-account-json' \
+    | uv run python -c "import json,sys; d=json.load(sys.stdin); print('Proton Pass OK:', d.get('type') == 'service_account')"
   ```
 
-  The expected result is `Keychain OK: True`. Run the backup before you remove
-  the source JSON file. After a successful backup, remove the file:
+  The expected result is `Proton Pass OK: True`. Run the backup before you
+  remove the source JSON file. After a successful backup, remove the file:
 
   ```bash
   ./scripts/backup-to-drive.sh
@@ -175,13 +171,9 @@ Requirements:
   ```
 
   The log must end with `backup end`. The script exports
-  `RCLONE_GCS_SERVICE_ACCOUNT_CREDENTIALS` from Keychain for `rclone`.
-
-  As a file-based fallback, configure the `rclone` remote with the JSON file:
-
-  ```bash
-  rclone config create gcs googlecloudstorage service_account_file "$HOME/.config/gcloud/your-key.json" bucket_policy_only true
-  ```
+  `RCLONE_GCS_SERVICE_ACCOUNT_CREDENTIALS` from Proton Pass for `rclone`, and
+  stops when it cannot read the field. An already set
+  `RCLONE_GCS_SERVICE_ACCOUNT_CREDENTIALS` skips the lookup.
 
 Run the backup once:
 
