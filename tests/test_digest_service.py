@@ -10,6 +10,7 @@ import requests
 
 from x_digest.config import Settings
 from x_digest.db import Database, utc_now
+from x_digest.digest import DigestStore
 from x_digest.digest_service import DigestContext, DigestDependencies, DigestService
 from x_digest.pipeline import Pipeline
 from x_digest.telegram import TelegramSender
@@ -190,6 +191,8 @@ def test_sync_keeps_archive_success_when_digest_fails(tmp_path: Path) -> None:
         ).fetchone()[0]
     assert status["status"] == "success"
     assert failed == 1
+    store = DigestStore(Database(settings.database_path), settings)
+    assert store.pending_count(store.load_state()["cursor"]) == 1
 
 
 def test_digest_failed_preserves_wrapped_llm_status(tmp_path: Path) -> None:
@@ -233,7 +236,6 @@ def test_digest_failed_preserves_wrapped_llm_status(tmp_path: Path) -> None:
 def test_bounded_sync_never_sends_digest(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
     pipeline = Pipeline(settings, api=DigestApi())
-    sender = FakeSender()
 
     def fail_send(_run_id: str, _counts: dict[str, int]) -> dict[str, object]:
         raise AssertionError("bounded sync must not send")
@@ -241,4 +243,3 @@ def test_bounded_sync_never_sends_digest(tmp_path: Path) -> None:
     pipeline._send_digest = fail_send  # type: ignore[method-assign]
     result = pipeline.sync(max_pages=1)
     assert "digest_posts" not in result
-    assert sender.sent == []

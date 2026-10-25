@@ -61,9 +61,12 @@ def test_account_matching_rules() -> None:
     assert not account_is_ignored(None, None, ["spammer"])
 
 
-def test_env_parses_ignore_accounts(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_env_parses_ignore_lists(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setenv("XDIGEST_IGNORE_ACCOUNTS", "Alice, @bob , 802")
-    assert Settings().ignore_accounts == ["Alice", "@bob", "802"]
+    monkeypatch.setenv("XDIGEST_IGNORE_FOLDERS", "alpha,beta")
+    settings = Settings()
+    assert settings.ignore_accounts == ["Alice", "@bob", "802"]
+    assert settings.ignore_folders == ["alpha", "beta"]
 
 
 def test_filter_keeps_raw_payload_intact() -> None:
@@ -105,17 +108,24 @@ def _insert_account_post(
         )
 
 
-def test_digest_excludes_ignored_accounts(tmp_path: Path) -> None:
+def test_digest_excludes_configured_and_auto_blocked_accounts(tmp_path: Path) -> None:
     database = Database(tmp_path / "silver.sqlite")
     database.initialize()
     _insert_account_post(database, "701", "friend", "801")
     _insert_account_post(database, "702", "Spammer", "802")
-    store = DigestStore(database, Settings(vault_path=tmp_path, ignore_accounts=["spammer"]))
-    state = store.load_state()
-    assert store.pending_count(state["cursor"]) == 1
-    posts, _, _ = store.select_batch(state["cursor"], 20)
+    configured = DigestStore(database, Settings(vault_path=tmp_path, ignore_accounts=["spammer"]))
+    state = configured.load_state()
+    assert configured.pending_count(state["cursor"]) == 1
+    posts, _, _ = configured.select_batch(state["cursor"], 20)
     assert [row["post_id"] for row in posts] == ["701"]
-    assert [row["post_id"] for row in store.get_posts_by_ids(["701", "702"])] == ["701"]
+    assert [row["post_id"] for row in configured.get_posts_by_ids(["701", "702"])] == ["701"]
+
+    database.set_checkpoint("ignore-accounts:auto", {"author_ids": ["802"]})
+    learned = DigestStore(database, Settings(vault_path=tmp_path))
+    learned_state = learned.load_state()
+    assert learned.pending_count(learned_state["cursor"]) == 1
+    learned_posts, _, _ = learned.select_batch(learned_state["cursor"], 20)
+    assert [row["post_id"] for row in learned_posts] == ["701"]
 
 
 def test_rebuild_silver_skips_ignored_accounts(tmp_path: Path) -> None:
@@ -203,14 +213,3 @@ def test_ignored_folder_authors_are_auto_blocked(tmp_path: Path) -> None:
     assert "904" in remaining
 
 
-def test_digest_uses_auto_blocked_ids(tmp_path: Path) -> None:
-    database = Database(tmp_path / "silver.sqlite")
-    database.initialize()
-    _insert_account_post(database, "701", "friend", "801")
-    _insert_account_post(database, "702", "Spammer", "802")
-    database.set_checkpoint("ignore-accounts:auto", {"author_ids": ["802"]})
-    store = DigestStore(database, Settings(vault_path=tmp_path))
-    state = store.load_state()
-    assert store.pending_count(state["cursor"]) == 1
-    posts, _, _ = store.select_batch(state["cursor"], 20)
-    assert [row["post_id"] for row in posts] == ["701"]

@@ -1,8 +1,6 @@
 """Tests for structured logging, rotation, and usage tracking."""
 
 import json
-import os
-import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -62,19 +60,3 @@ def test_usage_tracker_records_min_rate_limits() -> None:
     assert entry["min_rate_limit_remaining"] == LOW_RATE_REMAINING
     assert entry["min_app_limit_remaining"] == LOW_APP_REMAINING
     assert tracker.retries() == {"users/bookmarks": RETRY_COUNT}
-
-
-def test_cli_gold_command_logs_with_correlation_id(tmp_path: Path) -> None:
-    environment = {**os.environ, "XDIGEST_VAULT_PATH": str(tmp_path)}
-    subprocess.run(
-        ["uv", "run", "x-digest", "status"],
-        check=True,
-        capture_output=True,
-        text=True,
-        env=environment,
-    )
-    lines = _read_jsonl(tmp_path / "logs" / "application.jsonl")
-    completed = [line for line in lines if line["event"] == "command_completed"]
-    assert completed
-    assert completed[-1]["command"] == "status"
-    assert completed[-1]["correlation_id"]

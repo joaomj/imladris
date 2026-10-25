@@ -1,10 +1,11 @@
 """Tests for the digest CLI boundary without live network calls."""
 
 import json
-import os
-import subprocess
 from pathlib import Path
 
+import pytest
+
+from x_digest import cli
 from x_digest.db import Database, utc_now
 
 MISSING_CONFIG_EXIT = 2
@@ -22,38 +23,21 @@ def _insert_post(database: Database) -> None:
         )
 
 
-def _run(
-    args: list[str], vault: Path, extra: dict[str, str] | None = None
-) -> subprocess.CompletedProcess[str]:
-    environment = {
-        **os.environ,
-        "XDIGEST_VAULT_PATH": str(vault),
-        # Blank values outrank dotenv entries; validators normalize them
-        # to missing so the child process never sees developer credentials.
-        "TELEGRAM_BOT_TOKEN": "",
-        "TELEGRAM_USER_ID": "",
-        "XDIGEST_TELEGRAM_BOT_TOKEN": "",
-        "XDIGEST_TELEGRAM_CHAT_ID": "",
-        "XDIGEST_LLM_API_KEY": "",
-    }
-    if extra:
-        environment.update(extra)
-    return subprocess.run(
-        ["uv", "run", "x-digest", *args],
-        check=False,
-        capture_output=True,
-        text=True,
-        env=environment,
-    )
+@pytest.fixture
+def vault(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Point the CLI at an empty vault; the shared fixture blanks credentials."""
+    monkeypatch.setenv("XDIGEST_VAULT_PATH", str(tmp_path))
+    return tmp_path
 
 
-def test_digest_dry_run_prints_preview_without_network(tmp_path: Path) -> None:
-    database = Database(tmp_path / "silver.sqlite")
+def test_digest_dry_run_prints_preview_without_network(
+    vault: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    database = Database(vault / "silver.sqlite")
     database.initialize()
     _insert_post(database)
-    result = _run(["digest", "--dry-run"], tmp_path)
-    assert result.returncode == 0
-    payload = json.loads(result.stdout)
+    assert cli.main(["digest", "--dry-run"]) == 0
+    payload = json.loads(capsys.readouterr().out)
     assert payload["mode"] == "dry-run"
     assert payload["post_ids"] == ["cli-1"]
     assert "Weekly digest preview" in payload["text"]
@@ -63,15 +47,19 @@ def test_digest_dry_run_prints_preview_without_network(tmp_path: Path) -> None:
     )
 
 
-def test_digest_send_without_config_exits_two(tmp_path: Path) -> None:
-    database = Database(tmp_path / "silver.sqlite")
+def test_digest_send_without_config_exits_two(
+    vault: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    database = Database(vault / "silver.sqlite")
     database.initialize()
-    result = _run(["digest", "--send"], tmp_path)
-    assert result.returncode == MISSING_CONFIG_EXIT
-    assert "not configured" in result.stderr
+    assert cli.main(["digest", "--send"]) == MISSING_CONFIG_EXIT
+    assert "not configured" in capsys.readouterr().err
 
 
-def test_digest_dry_run_rejects_limit_below_one(tmp_path: Path) -> None:
-    result = _run(["digest", "--dry-run", "--limit", "0"], tmp_path)
-    assert result.returncode == MISSING_CONFIG_EXIT
-    assert "at least 1" in result.stderr
+def test_digest_dry_run_rejects_limit_below_one(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main(["digest", "--dry-run", "--limit", "0"])
+    assert exit_info.value.code == MISSING_CONFIG_EXIT
+    assert "at least 1" in capsys.readouterr().err

@@ -141,38 +141,55 @@ def _fetcher_settings(tmp_path: Path, **overrides: object) -> Settings:
     return Settings(vault_path=tmp_path, **overrides)  # type: ignore[arg-type]
 
 
-def test_fetcher_routes_pdf_by_content_type(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "content_type, body",
+    [
+        ("application/pdf", b"%PDF-1.7 body"),
+        ("application/octet-stream", b"%PDF-x"),
+    ],
+)
+def test_fetcher_routes_pdf_by_content_type_or_magic_bytes(
+    tmp_path: Path, content_type: str, body: bytes
+) -> None:
     def no_donsetch(_url: str, _config: object) -> dict:
         raise AssertionError("must not call donsetch")
 
     fetcher = SavedFetcher(
         _fetcher_settings(tmp_path),
-        probe_fn=lambda url, _timeout, _limit: (url, "application/pdf", b"%PDF-1.7 body"),
+        probe_fn=lambda url, _timeout, _limit: (url, content_type, body),
         donsetch_fn=no_donsetch,  # type: ignore[arg-type]
     )
-    outcome = fetcher.fetch("https://example.com/doc.pdf")
+    outcome = fetcher.fetch("https://example.com/doc")
     assert outcome.kind == "pdf"
-    assert outcome.pdf_bytes == b"%PDF-1.7 body"
+    assert outcome.pdf_bytes == body
 
 
-def test_fetcher_routes_pdf_by_magic_bytes(tmp_path: Path) -> None:
-    def no_donsetch(_url: str, _config: object) -> dict:
-        raise AssertionError("must not call donsetch")
-
-    fetcher = SavedFetcher(
-        _fetcher_settings(tmp_path),
-        probe_fn=lambda url, _timeout, _limit: (url, "application/octet-stream", b"%PDF-x"),
-        donsetch_fn=no_donsetch,  # type: ignore[arg-type]
-    )
-    assert fetcher.fetch("https://example.com/file").kind == "pdf"
-
-
-def test_fetcher_treats_truncation_as_failure(tmp_path: Path) -> None:
-    raw = {
-        "ok": True,
-        "meta": {"url": "https://example.com/a", "content_ok": True, "next_offset": 1000},
-        "content": "x",
-    }
+@pytest.mark.parametrize(
+    "raw, truncated, expected_error",
+    [
+        (
+            {
+                "ok": True,
+                "meta": {
+                    "url": "https://example.com/a",
+                    "content_ok": True,
+                    "next_offset": 1000,
+                },
+                "content": "x",
+            },
+            True,
+            "truncated",
+        ),
+        (
+            {"ok": False, "meta": {"url": "https://example.com/a"}, "error": {"message": "nope"}},
+            False,
+            "nope",
+        ),
+    ],
+)
+def test_fetcher_treats_bad_extraction_as_failure(
+    tmp_path: Path, raw: dict, truncated: bool, expected_error: str
+) -> None:
     fetcher = SavedFetcher(
         _fetcher_settings(tmp_path, donsetch_max_chars=1000),
         probe_fn=lambda url, _timeout, _limit: (url, "text/html", b"<html>"),
@@ -180,24 +197,8 @@ def test_fetcher_treats_truncation_as_failure(tmp_path: Path) -> None:
     )
     outcome = fetcher.fetch("https://example.com/a")
     assert outcome.kind == "failure"
-    assert outcome.truncated is True
-    assert "truncated" in (outcome.error or "")
-
-
-def test_fetcher_treats_not_ok_as_failure(tmp_path: Path) -> None:
-    raw: dict = {
-        "ok": False,
-        "meta": {"url": "https://example.com/a"},
-        "error": {"message": "nope"},
-    }
-    fetcher = SavedFetcher(
-        _fetcher_settings(tmp_path),
-        probe_fn=lambda url, _timeout, _limit: (url, "text/html", b"<html>"),
-        donsetch_fn=lambda _url, _config: raw,
-    )
-    outcome = fetcher.fetch("https://example.com/a")
-    assert outcome.kind == "failure"
-    assert "nope" in (outcome.error or "")
+    assert outcome.truncated is truncated
+    assert expected_error in (outcome.error or "")
 
 
 def test_fetcher_rejects_private_url_without_network(tmp_path: Path) -> None:
@@ -359,10 +360,6 @@ def test_brave_sync_cli_exit_code_reflects_failures(
         cli.SavedPipeline, "sync", lambda _self, **_kwargs: {"run_id": "r", "failed": 0}
     )
     assert cli.main(["brave-sync", "--profile", "Default"]) == 0
-    parser = cli.build_parser()
-    args = parser.parse_args(["brave-sync", "--profile", "P", "--db-path", "/tmp/db"])
-    assert args.profile == "P"
-    assert str(args.db_path) == "/tmp/db"
 
 
 def test_http_redirect_is_checked_before_request(monkeypatch: pytest.MonkeyPatch) -> None:

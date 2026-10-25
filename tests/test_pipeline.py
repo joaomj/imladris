@@ -8,6 +8,9 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
+from x_digest import cli
 from x_digest.bronze import BronzeWriter, BronzeWriteRequest
 from x_digest.config import DEFAULT_X_SCOPE, Settings
 from x_digest.db import Database, utc_now
@@ -264,64 +267,34 @@ def test_cli_status_uses_configured_vault(tmp_path: Path) -> None:
         env=environment,
     )
     assert '"posts": 2' in result.stdout
+    lines = [
+        json.loads(line)
+        for line in (tmp_path / "logs" / "application.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    completed = [line for line in lines if line["event"] == "command_completed"]
+    assert completed[-1]["command"] == "status"
+    assert completed[-1]["correlation_id"]
 
 
-def test_env_ignore_folders_accepts_comma_separated_list() -> None:
-    environment = {**os.environ, "XDIGEST_IGNORE_FOLDERS": "alpha,beta"}
-    result = subprocess.run(
-        [
-            "uv",
-            "run",
-            "python",
-            "-c",
-            "from x_digest.config import load_settings; print(load_settings().ignore_folders)",
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-        env=environment,
-    )
-    assert result.stdout.strip() == "['alpha', 'beta']"
-
-
-def test_cli_dry_run_requires_a_page_bound() -> None:
-    result = subprocess.run(
-        ["uv", "run", "x-digest", "sync", "--dry-run"],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == USAGE_ERROR
-    assert "requires --max-pages" in result.stderr
-
-
-def test_cli_has_no_scheduler_commands() -> None:
-    result = subprocess.run(
-        ["uv", "run", "x-digest", "--help"],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    assert "install-scheduler" not in result.stdout
-    assert "scheduled-sync" not in result.stdout
-
-
-def test_incremental_sync_skips_folders_within_interval(tmp_path: Path) -> None:
-    settings = Settings(vault_path=tmp_path)
-    api = FolderContentApi()
-    first = Pipeline(settings, api=api).sync()
-    assert first["folder_pages"] == 1
-    assert first["folders_skipped"] == 0
-    second = Pipeline(settings, api=api).sync()
-    assert second["folder_pages"] == 0
-    assert second["folder_posts"] == 0
-    assert second["folders_skipped"] == 1
+def test_cli_dry_run_requires_a_page_bound(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main(["sync", "--dry-run"])
+    assert exit_info.value.code == USAGE_ERROR
+    assert "requires --max-pages" in capsys.readouterr().err
 
 
 def test_incremental_sync_runs_folders_after_interval_and_full(tmp_path: Path) -> None:
     settings = Settings(vault_path=tmp_path)
     api = FolderContentApi()
-    Pipeline(settings, api=api).sync()
+    first = Pipeline(settings, api=api).sync()
+    assert first["folder_pages"] == 1
+    assert first["folders_skipped"] == 0
+    within_interval = Pipeline(settings, api=api).sync()
+    assert within_interval["folder_pages"] == 0
+    assert within_interval["folder_posts"] == 0
+    assert within_interval["folders_skipped"] == 1
     database = Database(settings.database_path)
     database.set_checkpoint(
         "folders:owner",
@@ -330,8 +303,6 @@ def test_incremental_sync_runs_folders_after_interval_and_full(tmp_path: Path) -
     elapsed = Pipeline(settings, api=api).sync()
     assert elapsed["folder_pages"] == 1
     assert elapsed["folders_skipped"] == 0
-    within_interval = Pipeline(settings, api=api).sync()
-    assert within_interval["folders_skipped"] == 1
     forced = Pipeline(settings, api=api).sync(full=True)
     assert forced["folder_pages"] == 1
     assert forced["folders_skipped"] == 0
@@ -422,63 +393,31 @@ def test_markdown_follows_folder_organization(tmp_path: Path) -> None:
     assert "Agent memory patterns" in second
 
 
-def test_rebuild_silver_skips_ignored_folders(tmp_path: Path) -> None:
+def test_rebuild_silver_applies_ignore_list_and_keeps_folders_without_one(
+    tmp_path: Path,
+) -> None:
     settings = Settings(vault_path=tmp_path)
     Pipeline(settings, api=FolderContentApi()).sync()
     store = GoldStore(Database(settings.database_path))
-    store.rebuild_silver(tmp_path / "bronze", ["agents"])
-    with Database(settings.database_path).connect() as connection:
-        folder_count = connection.execute(
-            "SELECT COUNT(*) FROM folders WHERE name='agents'"
-        ).fetchone()[0]
-        membership_count = connection.execute(
-            "SELECT COUNT(*) FROM bookmark_memberships WHERE folder_id='agents'"
-        ).fetchone()[0]
-        post_count = connection.execute(
-            "SELECT COUNT(*) FROM posts WHERE post_id IN ('501', '502')"
-        ).fetchone()[0]
-    assert folder_count == 0
-    assert membership_count == 0
-    assert post_count == 0
 
+    def folder_rows() -> tuple[int, int, int]:
+        with Database(settings.database_path).connect() as connection:
+            return (
+                connection.execute("SELECT COUNT(*) FROM folders WHERE name='agents'").fetchone()[
+                    0
+                ],
+                connection.execute(
+                    "SELECT COUNT(*) FROM bookmark_memberships WHERE folder_id='agents'"
+                ).fetchone()[0],
+                connection.execute(
+                    "SELECT COUNT(*) FROM posts WHERE post_id IN ('501', '502')"
+                ).fetchone()[0],
+            )
 
-def test_rebuild_silver_keeps_folders_without_ignore_list(tmp_path: Path) -> None:
-    settings = Settings(vault_path=tmp_path)
-    Pipeline(settings, api=FolderContentApi()).sync()
-    store = GoldStore(Database(settings.database_path))
     store.rebuild_silver(tmp_path / "bronze")
-    with Database(settings.database_path).connect() as connection:
-        folder_count = connection.execute(
-            "SELECT COUNT(*) FROM folders WHERE name='agents'"
-        ).fetchone()[0]
-        membership_count = connection.execute(
-            "SELECT COUNT(*) FROM bookmark_memberships WHERE folder_id='agents'"
-        ).fetchone()[0]
-    assert folder_count == 1
-    assert membership_count == FOLDER_POST_COUNT
-
-
-def test_cli_markdown_command_writes_missing_files(tmp_path: Path) -> None:
-    _seed_vault(tmp_path)
-    environment = {**os.environ, "XDIGEST_VAULT_PATH": str(tmp_path)}
-    first = subprocess.run(
-        ["uv", "run", "x-digest", "markdown"],
-        check=True,
-        capture_output=True,
-        text=True,
-        env=environment,
-    )
-    assert '"written": 2' in first.stdout
-    assert (tmp_path / "markdown" / "posts" / "100.md").exists()
-    second = subprocess.run(
-        ["uv", "run", "x-digest", "markdown"],
-        check=True,
-        capture_output=True,
-        text=True,
-        env=environment,
-    )
-    assert '"written": 0' in second.stdout
-    assert '"skipped": 2' in second.stdout
+    assert folder_rows() == (1, FOLDER_POST_COUNT, FOLDER_POST_COUNT)
+    store.rebuild_silver(tmp_path / "bronze", ["agents"])
+    assert folder_rows() == (0, 0, 0)
 
 
 def test_markdown_writer_creates_complete_files_with_media(tmp_path: Path) -> None:

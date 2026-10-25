@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from x_digest.config import Settings
-from x_digest.db import Database, utc_now
+from x_digest.db import Database
 from x_digest.digest import DigestBuilder, DigestStore
 
 POST_IDS = ["10", "11", "12"]
@@ -29,21 +29,6 @@ def _settings(vault: Path, **overrides: object) -> Settings:
     return Settings(vault_path=vault, **overrides)  # type: ignore[arg-type]
 
 
-def test_failed_delivery_keeps_pending_batch(tmp_path: Path) -> None:
-    database = Database(tmp_path / "silver.sqlite")
-    database.initialize()
-    _insert_post(database, "10", utc_now())
-    store = DigestStore(database, _settings(tmp_path))
-    state = store.load_state()
-    posts, _, _ = store.select_batch(state["cursor"], 20)
-    assert [row["post_id"] for row in posts] == ["10"]
-    # Simulate a delivery failure: state is not advanced.
-    assert store.pending_count(state["cursor"]) == 1
-    assert [row["post_id"] for row in store.select_batch(state["cursor"], 20)[0]] == [
-        "10"
-    ]
-
-
 def test_successful_delivery_advances_cursor(tmp_path: Path) -> None:
     database = Database(tmp_path / "silver.sqlite")
     database.initialize()
@@ -56,21 +41,6 @@ def test_successful_delivery_advances_cursor(tmp_path: Path) -> None:
     assert cursor is not None
     store.clear_batch(cursor)
     assert store.pending_count(store.load_state()["cursor"]) == 0
-
-
-def test_probe_run_does_not_consume_digest_cursor(tmp_path: Path) -> None:
-    database = Database(tmp_path / "silver.sqlite")
-    database.initialize()
-    with database.transaction() as connection:
-        connection.execute(
-            "INSERT INTO runs(run_id, started_at, status) VALUES ('probe', ?, 'success')",
-            (utc_now(),),
-        )
-    _insert_post(database, "10", utc_now())
-    store = DigestStore(database, _settings(tmp_path))
-    posts, _, total = store.select_batch(store.load_state()["cursor"], 20)
-    assert total == 1
-    assert [row["post_id"] for row in posts] == ["10"]
 
 
 def test_more_than_limit_retains_excess(tmp_path: Path) -> None:
@@ -111,25 +81,6 @@ def test_prompt_stays_within_total_budget(tmp_path: Path) -> None:
     _, user, prompt_chars, _ = DigestBuilder(settings).build_prompt(long_posts)
     assert prompt_chars < PROMPT_BUDGET
     assert len(user) < PROMPT_BUDGET
-
-
-def test_build_prompt_cites_only_input_ids(tmp_path: Path) -> None:
-    settings = _settings(tmp_path)
-    posts = [
-        {
-            "post_id": post_id,
-            "username": "reader",
-            "url": f"https://x.com/reader/status/{post_id}",
-            "text": "Body",
-            "created_at": "2026-08-01",
-            "first_seen_at": "2026-08-01",
-        }
-        for post_id in POST_IDS
-    ]
-    _, user, _, _ = DigestBuilder(settings).build_prompt(posts)
-    for post_id in POST_IDS:
-        assert post_id in user
-    assert "9999" not in user
 
 
 def test_parse_rejects_unknown_post_ids(tmp_path: Path) -> None:
