@@ -404,6 +404,24 @@ verification, and rebuild through `argparse`.
 
 **Trade-off:** There is no browser UI or interactive archive browser.
 
+### 4.10 Keep the rotating token out of the OS credential store
+
+**Decision:** Keep the X OAuth token in `state_dir/oauth2.json` with mode 0600
+and read static secrets from Proton Pass through `pass-cli`. Store neither in
+the macOS login Keychain.
+
+**Reason:** A Keychain item names the programs allowed to use it. A program that
+is not on that list blocks until the dialog is answered, and nothing times out.
+On 2026-10-25 a launchd-started sync waited four hours for such a dialog before
+writing its first event, and the weekly backup had already given up. Static
+secrets moved to Proton Pass and the rotating token moved to a file the service
+reads without a prompt.
+
+**Trade-off:** The token file is plaintext, readable by any process running as
+the same account, and `PROTON_PASS_KEY_PROVIDER=fs` keeps the Proton Pass
+session key in a plaintext file beside the session data. Both are accepted on a
+single-user machine whose vault is already local plaintext.
+
 ## 5. Repository Layout
 
 ```text
@@ -903,8 +921,13 @@ and failed token saves produce events without credential values.
 
 ### 12.2 Protected material
 
-- OAuth tokens are stored in the system credential store.
-- Client credentials are loaded from environment variables or `.env`.
+- The X OAuth token and PKCE state are owner-only files under `state_dir`,
+  not OS credential-store items (section 4.10).
+- Static secrets come from Proton Pass through `pass-cli`, selected by
+  `XDIGEST_SECRETS_VAULT`: the GCS service-account JSON and the OpenRouter key.
+- Client credentials and the Telegram bot token are loaded from environment
+  variables or `.env`. A Keychain item named by `XDIGEST_KEYCHAIN_SERVICE` is
+  only a fallback for the Telegram token.
 - The `.env` file is ignored by Git.
 - The application log does not intentionally write tokens or secrets.
 - Bronze content, SQLite data, and media remain local files.

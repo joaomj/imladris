@@ -255,3 +255,25 @@ rclone copy "$XDIGEST_BACKUP_REMOTE:$XDIGEST_BACKUP_BUCKET" ./data/ --fast-list
 
 See [Backup and restore](tech-context.md#142-backup-and-restore) for technical
 details.
+
+## Credential failures
+
+Both scheduled jobs read static secrets from Proton Pass. When the Proton Pass
+session expires, `pass-cli` cannot open its local database and the job exits
+with `pass-cli could not read pass://…` instead of continuing without
+credentials. That message appears in `data/logs/backup.log` or
+`data/logs/scheduler-<date>.log`, and the daily problem report names a backup
+that did not run.
+
+Renew the session in a shell that sets the same key provider the agents use,
+then start the jobs again:
+
+```bash
+PROTON_PASS_KEY_PROVIDER=fs pass-cli login
+launchctl kickstart -k "gui/$(id -u)/com.x-digest.sync"
+launchctl kickstart -k "gui/$(id -u)/com.x-digest.backup"
+```
+
+The X OAuth token is not involved: it lives in `state_dir/oauth2.json`, so a
+sync never waits on a credential dialog. When X rejects a refresh, the sync
+sends a Telegram alert naming `uv run x-digest auth`.
