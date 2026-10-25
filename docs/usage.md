@@ -90,6 +90,21 @@ posts that still lack one, without any sync:
 uv run x-digest markdown
 ```
 
+### Check for silent failures
+
+Ask whether the last week produced what it should, without contacting X,
+OpenRouter, or Telegram:
+
+```bash
+uv run x-digest health
+```
+
+It reports a stalled run, a failed or missing latest run, a digest that never
+completed, and a backup that never succeeded or has aged. Add `--notify` to
+send the findings to Telegram. See
+[Daily problem report](operations.md#daily-problem-report) for the finding
+codes and the daily agent.
+
 ### Archive the Brave Reading List
 
 Brave ingestion is separate from X bookmark sync and does not require X authorization.

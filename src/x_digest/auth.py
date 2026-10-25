@@ -188,4 +188,5 @@ def authenticated_client(settings: Settings, log: JsonlLogger, correlation_id: s
     credentials = TokenStore(settings).load()
     if not credentials:
         raise XAuthenticationError("No X token found; run uv run x-digest auth")
+    log.emit(correlation_id, "token_loaded", expires_at=credentials.get("expires_at"))
     return build_client(settings, credentials, log=log, correlation_id=correlation_id)

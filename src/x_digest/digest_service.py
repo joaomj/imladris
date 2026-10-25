@@ -120,7 +120,10 @@ class DigestService:
             return self._deliver_batch(counts, state, limit)
         except Exception as error:
             preview = _safe_error(error, self.sender)
-            self._event("digest_failed", "warning", error=preview[:DIGEST_ERROR_PREVIEW_CHARS])
+            details: dict[str, Any] = {"error": preview[:DIGEST_ERROR_PREVIEW_CHARS]}
+            if isinstance(error, ValueError):
+                details["reason"] = str(error)[:DIGEST_ERROR_PREVIEW_CHARS]
+            self._event("digest_failed", "warning", **details)
             counts["digest_failed"] = 1
             return {"status": "failed", "error": preview[:DIGEST_ERROR_PREVIEW_CHARS]}
 
@@ -142,8 +145,14 @@ class DigestService:
         if not posts:
             return self._send_heartbeat(counts, total)
         system, user, prompt_chars, _truncated = self.builder.build_prompt(posts)
+        valid_ids = {str(row["post_id"]) for row in posts}
         raw = self.llm.complete(user, system)
-        parsed = DigestBuilder.parse_response(raw, {str(row["post_id"]) for row in posts})
+        try:
+            parsed = DigestBuilder.parse_response(raw, valid_ids)
+        except ValueError as error:
+            self._event("digest_retry", "warning", reason=str(error)[:DIGEST_ERROR_PREVIEW_CHARS])
+            raw = self.llm.complete(user, system)
+            parsed = DigestBuilder.parse_response(raw, valid_ids)
         rendered = DigestBuilder.render_html(
             parsed, {str(row["post_id"]): row for row in posts}
         )

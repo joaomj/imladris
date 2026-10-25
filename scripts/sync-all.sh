@@ -14,12 +14,30 @@ fi
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || exit 1
 cd "$PROJECT_DIR" || exit 1
 
-log() {
-    echo "$(date '+%Y-%m-%d %H:%M:%S') [sync-all] $*"
+LOG_DIR="$PROJECT_DIR/data/logs"
+RUN_LOG="$LOG_DIR/scheduler-$(date '+%Y-%m-%d').log"
+mkdir -p "$LOG_DIR"
+
+stamp_lines() {
+    while IFS= read -r line; do
+        printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$line"
+    done
 }
 
+log() {
+    printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "[sync-all] $*" | tee -a "$RUN_LOG"
+}
+
+# Every stage line reaches the dated run log with its own timestamp, so an old
+# traceback cannot be mistaken for the current run.
+run_stage() {
+    "$@" 2>&1 | stamp_lines | tee -a "$RUN_LOG"
+    return "${PIPESTATUS[0]}"
+}
+
+log "run start"
 log "stage x-sync start"
-if "$UV_BIN" run --project "$PROJECT_DIR" --extra brave x-digest sync; then
+if run_stage "$UV_BIN" run --project "$PROJECT_DIR" --extra brave x-digest sync; then
     X_STATUS=0
 else
     X_STATUS=$?
@@ -27,7 +45,7 @@ fi
 log "stage x-sync end exit=$X_STATUS"
 
 log "stage brave-sync start"
-if "$UV_BIN" run --project "$PROJECT_DIR" --extra brave x-digest brave-sync; then
+if run_stage "$UV_BIN" run --project "$PROJECT_DIR" --extra brave x-digest brave-sync; then
     BRAVE_STATUS=0
 else
     BRAVE_STATUS=$?

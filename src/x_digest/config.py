@@ -177,6 +177,8 @@ class Settings(BaseSettings):
     llm_reasoning_effort: Literal["xhigh", "high", "medium", "low", "minimal", "none"] = "low"
     llm_max_tokens: int = Field(default=1200, ge=100, le=4000)
     llm_timeout_seconds: float = Field(default=30.0, gt=0, le=120)
+    health_stuck_run_minutes: int = Field(default=120, ge=5)
+    health_max_age_days: int = Field(default=8, ge=1)
     digest_max_posts: int = Field(default=20, ge=1, le=50)
     digest_max_chars_per_post: int = Field(default=800, ge=100, le=4000)
     digest_prompt_max_chars: int = Field(default=12000, ge=2000, le=100000)

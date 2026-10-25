@@ -42,13 +42,44 @@ cat > "$PLIST" <<EOF
     <key>WorkingDirectory</key>
     <string>${PROJECT_DIR}</string>
     <key>StartCalendarInterval</key>
+    <array>
+        <dict>
+            <key>Weekday</key>
+            <integer>0</integer>
+            <key>Hour</key>
+            <integer>6</integer>
+            <key>Minute</key>
+            <integer>15</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key>
+            <integer>0</integer>
+            <key>Hour</key>
+            <integer>10</integer>
+            <key>Minute</key>
+            <integer>15</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key>
+            <integer>0</integer>
+            <key>Hour</key>
+            <integer>14</integer>
+            <key>Minute</key>
+            <integer>15</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key>
+            <integer>0</integer>
+            <key>Hour</key>
+            <integer>18</integer>
+            <key>Minute</key>
+            <integer>15</integer>
+        </dict>
+    </array>
+    <key>EnvironmentVariables</key>
     <dict>
-        <key>Weekday</key>
-        <integer>0</integer>
-        <key>Hour</key>
-        <integer>6</integer>
-        <key>Minute</key>
-        <integer>15</integer>
+        <key>PROTON_PASS_KEY_PROVIDER</key>
+        <string>fs</string>
     </dict>
     <key>StandardOutPath</key>
     <string>${PROJECT_DIR}/data/logs/backup-scheduler.out.log</string>
@@ -64,4 +95,4 @@ EOF
 
 launchctl bootout "gui/$(id -u)" "$PLIST" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
-echo "installed ${LABEL}: runs every Sunday at 06:15"
+echo "installed ${LABEL}: runs every Sunday at 06:15, 10:15, 14:15, and 18:15"

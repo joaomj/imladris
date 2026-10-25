@@ -105,6 +105,7 @@ class Pipeline:
                 (run_id, utc_now()),
             )
         self.log.begin_run(run_id)
+        self._event(run_id, "pipeline", "run_started")
         return run_id
 
     def _event(

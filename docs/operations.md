@@ -5,10 +5,12 @@ a schedule. Run commands from the repository root.
 
 ## Automated Weekly Sync
 
-Install the launchd agents for combined collection every Sunday at 06:00 and
-GCS backup at 06:15. The collection job runs X sync, then Brave sync. Both
-stages run even if one fails; the job reports failure if either stage fails.
-The backup waits for the combined job to finish, up to 30 minutes.
+Install the launchd agents for combined collection every Sunday at 06:00,
+GCS backup at 06:15, and a daily problem report at 07:00. The collection job
+runs X sync, then Brave sync. Both stages run even if one fails; the job
+reports failure if either stage fails. The backup waits for the combined job
+to finish, up to 30 minutes, and retries at 10:15, 14:15, and 18:15 on Sunday.
+It skips an attempt once that day's copy has succeeded.
 
 Re-run the installer to replace an existing X-only job. It retains the same
 launchd label and schedule and does not start collection immediately.
@@ -19,20 +21,29 @@ Brave's profile. A successful Terminal run alone does not verify this access.
 ```bash
 ./scripts/install-scheduler.sh
 ./scripts/install-backup-scheduler.sh
+./scripts/install-health-scheduler.sh
 ```
 
 The optional shell trigger starts collection from the first interactive shell
-each ISO week, after a 30-minute delay. It starts backup after collection ends. Before enabling the shell hook, set `_XDIGEST_TRIGGER` in
-`scripts/zshrc-init.sh` to your checkout’s `scripts/weekly-shell-trigger.sh` path.
-Then source `scripts/zshrc-init.sh` from `~/.zshrc`. The scheduler installer
-does not add this hook.
+each ISO week, after a 30-minute delay. It starts backup after collection ends.
+Set the checkout path and source the hook in `~/.zshrc`:
+
+```sh
+XDIGEST_PROJECT_DIR="/absolute/path/to/imladris"
+. "$XDIGEST_PROJECT_DIR/scripts/zshrc-init.sh"
+```
+
+Keep this path in your local shell configuration. Do not edit the tracked hook
+for a specific computer. The scheduler installer does not add the shell hook.
 Progress lands in `data/logs/weekly-trigger.log` with a once-per-week
 stamp at `data/logs/weekly-shell-trigger.stamp`.
 
-Remove the agent:
+Remove an agent:
 
 ```bash
 ./scripts/install-scheduler.sh --remove
+./scripts/install-backup-scheduler.sh --remove
+./scripts/install-health-scheduler.sh --remove
 ```
 
 Trigger the first run immediately:
@@ -41,8 +52,39 @@ Trigger the first run immediately:
 launchctl kickstart "gui/$(id -u)/com.x-digest.sync"
 ```
 
-See [Deployment and release](tech-context.md#17-deployment-and-release) for
-the agent behavior.
+Collection output lands in `data/logs/scheduler-<date>.log` with one
+timestamp per line, so a traceback from an earlier run cannot be mistaken for
+today's. See [Deployment and release](tech-context.md#17-deployment-and-release)
+for the agent behavior.
+
+## Daily problem report
+
+`x-digest health` reads the database and the backup stamp and reports what went
+wrong silently. It does not call X, OpenRouter, or Telegram unless you ask it
+to send:
+
+```bash
+uv run x-digest health
+uv run x-digest health --notify
+```
+
+It reports these findings:
+
+| Code | Meaning |
+| --- | --- |
+| `run_stalled` | A run is still marked `running` past `XDIGEST_HEALTH_STUCK_RUN_MINUTES` (default 120). |
+| `run_failed` | The latest run finished with status `failed`. |
+| `run_missing` | The latest run started more than `XDIGEST_HEALTH_MAX_AGE_DAYS` (default 8) days ago. |
+| `digest_incomplete` | The newest digest event in that window is a failure or a partial delivery, not a sent digest. |
+| `backup_missing` | The backup log exists but no successful copy is recorded. |
+| `backup_stale` | The last successful copy is older than `XDIGEST_HEALTH_MAX_AGE_DAYS` days. |
+| `backup_timestamp_invalid` | The success stamp holds no parseable timestamp. |
+| `run_timestamp_invalid` | A run row holds no parseable start time. |
+
+The exit code is 0 when the report is clean and 1 when it lists findings.
+`--notify` sends the findings to Telegram and requires the Telegram
+credentials. The daily agent installed with `./scripts/install-health-scheduler.sh`
+runs `health --notify` at 07:00, after the Sunday collection and backup windows.
 
 ## Weekly Telegram digest
 
@@ -52,7 +94,10 @@ posts. The command continues to report the collection failure.
 
 OpenRouter summarizes the oldest undelivered posts as themed key points with
 source links. Delivery is best-effort: archive success never
-depends on the digest, and failed batches stay pending for the next run.
+depends on the digest, and failed batches stay pending for the next run. If the
+model returns output that fails validation, the digest asks once more before
+recording `digest_failed`. The daily problem report surfaces a digest that
+never completed, so a failed week does not stay invisible.
 
 Configure the bot and OpenRouter key in `.env`:
 
@@ -107,7 +152,8 @@ Token refresh and login callback saves use the same process lock. If a sync
 holds the lock, complete authorization after the sync ends. Start authorization
 again if the callback code expires while you wait.
 
-The application log records `oauth_refresh_started`, `oauth_token_saved`,
+The application log records `token_loaded` for every run that reads the
+stored token, plus `oauth_refresh_started`, `oauth_token_saved`,
 `oauth_refresh_failed`, and `oauth_token_save_failed`. Successful saves include
 the access-token expiry time. Refresh saves also record whether the refresh
 token changed. These events do not include tokens, authorization codes, or
@@ -181,8 +227,9 @@ Run the backup once:
 ./scripts/backup-to-drive.sh
 ```
 
-Install the launchd agent, which runs the backup every Sunday at 06:15, after
-the weekly sync:
+Install the launchd agent, which runs the backup every Sunday at 06:15, 10:15,
+14:15, and 18:15, so a long collection cannot cost a whole week. Each attempt
+after a successful copy on the same day exits immediately:
 
 ```bash
 ./scripts/install-backup-scheduler.sh
@@ -193,6 +240,10 @@ Remove the agent:
 ```bash
 ./scripts/install-backup-scheduler.sh --remove
 ```
+
+A successful copy writes `data/state/backup.last-success`, which both the
+same-day skip and the daily problem report read. The file holds the local
+completion time.
 
 To restore, copy back from the bucket with `rclone copy`:
 

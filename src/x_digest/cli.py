@@ -18,12 +18,14 @@ from .db import Database
 from .digest import DigestBuilder, DigestStore
 from .digest_service import DigestContext, DigestOptions, DigestService
 from .gold import GoldStore
+from .health import HealthCheck, render_alert
 from .lock import LockAlreadyHeld, ProcessLock
 from .logging_setup import JsonlLogger
 from .markdown import MarkdownWriter
 from .pipeline import Pipeline
 from .saved_fetch import SavedFetchError
 from .saved_pipeline import SavedPipeline
+from .telegram import TelegramSender
 
 
 def _print(value: Any) -> None:
@@ -166,6 +168,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="override llm_model for this delivery",
     )
+    health = commands.add_parser("health", help="report stalled runs and missed digests or backups")
+    health.add_argument("--notify", action="store_true", help="send findings to Telegram")
     _add_saved_commands(commands)
     return parser
 
@@ -238,6 +242,42 @@ def _handle_digest(args: argparse.Namespace, settings: Any, correlation_id: str)
     log.emit(correlation_id, "command_completed", "info", command="digest", mode="send", **result)
     _print(result)
     return 0 if result.get("status") in {"sent", "partial"} else 1
+
+
+def _handle_health(args: argparse.Namespace, settings: Any, correlation_id: str) -> int:
+    log = _logger_for(settings)
+    log.emit(correlation_id, "command_started", "debug", command="health")
+    report = HealthCheck(settings).run()
+    findings = report["findings"]
+    level = "warning" if findings else "info"
+    log.emit(
+        correlation_id,
+        "command_completed",
+        level,
+        command="health",
+        status=report["status"],
+        findings=[finding["code"] for finding in findings],
+    )
+    if findings and args.notify:
+        if not settings.telegram_enabled():
+            print(
+                json.dumps(
+                    {"error": "health --notify requires Telegram configuration"},
+                    ensure_ascii=False,
+                ),
+                file=sys.stderr,
+            )
+            _print(report)
+            return 2
+        try:
+            TelegramSender(settings, log, correlation_id).send_alert(render_alert(report))
+        except Exception as error:
+            log.emit(correlation_id, "health_alert_failed", "error", category=type(error).__name__)
+            _print(report)
+            raise
+        log.emit(correlation_id, "health_alert_sent", level, findings=len(findings))
+    _print(report)
+    return 0 if report["status"] == "ok" else 1
 
 
 def _handle_live(args: argparse.Namespace, settings: Any, correlation_id: str) -> int:
@@ -465,15 +505,19 @@ def main(argv: list[str] | None = None) -> int:
         settings = load_settings()
         if args.log_level:
             settings.log_level = args.log_level
-        if args.command == "auth":
-            return _handle_auth(args, settings, correlation_id)
-        if args.command in {"sync", "probe-post", "probe-bookmarks"}:
-            return _handle_live(args, settings, correlation_id)
-        if args.command == "digest":
-            return _handle_digest(args, settings, correlation_id)
-        if args.command in {"brave-sync", "saved-search", "saved-show", "saved-export"}:
-            return _handle_saved(args, settings, correlation_id)
-        return _handle_gold(args, settings, correlation_id)
+        handlers = {
+            "auth": _handle_auth,
+            "sync": _handle_live,
+            "probe-post": _handle_live,
+            "probe-bookmarks": _handle_live,
+            "digest": _handle_digest,
+            "health": _handle_health,
+            "brave-sync": _handle_saved,
+            "saved-search": _handle_saved,
+            "saved-show": _handle_saved,
+            "saved-export": _handle_saved,
+        }
+        return handlers.get(args.command, _handle_gold)(args, settings, correlation_id)
     except (
         AuthError,
         BraveReaderError,

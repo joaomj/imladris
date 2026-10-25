@@ -64,6 +64,11 @@ cat > "$PLIST" <<EOF
     <string>${PROJECT_DIR}/data/logs/scheduler.out.log</string>
     <key>StandardErrorPath</key>
     <string>${PROJECT_DIR}/data/logs/scheduler.err.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PROTON_PASS_KEY_PROVIDER</key>
+        <string>fs</string>
+    </dict>
     <key>ProcessType</key>
     <string>Background</string>
     <key>RunAtLoad</key>

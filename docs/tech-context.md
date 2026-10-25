@@ -607,6 +607,8 @@ limits when `Settings` loads.
 | `XDIGEST_DIGEST_MAX_POSTS` | `20` | Maximum posts per digest batch. Range: 1 to 50. |
 | `XDIGEST_DIGEST_MAX_CHARS_PER_POST` | `800` | Upper bound for post body text in the prompt. Range: 100 to 4000. |
 | `XDIGEST_DIGEST_PROMPT_MAX_CHARS` | `12000` | Total prompt budget including instructions and metadata. |
+| `XDIGEST_HEALTH_STUCK_RUN_MINUTES` | `120` | Age after which a `running` run is reported as stalled. Minimum 5. |
+| `XDIGEST_HEALTH_MAX_AGE_DAYS` | `8` | Window for the health check: latest run, newest digest event, and last successful backup. Minimum 1. |
 | `XDIGEST_MAX_RESULTS_PER_PAGE` | `100` | X bookmark page size. Range: 1 to 100. |
 | `XDIGEST_MAX_RETRIES` | `3` | Retries after transient API failures. Range: 0 to 10. |
 | `XDIGEST_RETRY_BASE_SECONDS` | `1.0` | Exponential backoff base. Range: greater than 0 and at most 60. |
@@ -645,6 +647,7 @@ log_dir       = <vault>/logs
 log_run_dir   = <vault>/logs/runs
 lock_path     = <vault>/run.lock
 bronze_root   = <vault>/bronze
+backup_stamp  = <vault>/state/backup.last-success
 ```
 
 ## 8. Data Model
@@ -1044,6 +1047,27 @@ API access, so it consumes no X tokens. It is idempotent: it only creates
 missing files, which also backfills posts archived before this feature
 existed.
 
+### 13.7 Silent failures and the health check
+
+Two failures used to pass unseen: a run that stalls after its row is inserted,
+and a digest that fails after collection succeeds. The run row records
+`started_at` and status `running` before any network or credential work, and
+every run emits a `run_started` event and, once the stored token is read, a
+`token_loaded` event. A stall therefore has a first and a last timestamp in
+`run_events` and in `data/logs/runs/<run_id>.jsonl`.
+
+`x-digest health` turns that evidence into a report. It reads `runs`,
+`run_events`, and the backup success stamp; it writes nothing and performs no
+network call unless `--notify` is set. Stalled runs, a failed or missing latest
+run, a digest whose newest event is not a send, and an aging or absent backup
+each produce a named finding. The command exits 1 when findings exist, so a
+scheduler can treat it as a failure.
+
+The digest fails as `digest_failed` with the category and, for a validation
+error, the reason. A validation failure triggers one repeat request to the
+model before delivery gives up, because the failure mode that lost the
+2026-10-25 digest was a model response that did not validate.
+
 ## 14. Manual Operations
 
 Commands run manually or through the optional scheduler (section 17). Normal
@@ -1140,8 +1164,11 @@ The weekly backup uses `scripts/backup-to-drive.sh` with `rclone` to Google
 Cloud Storage. The bucket name and `rclone` remote come from
 `XDIGEST_BACKUP_BUCKET` and `XDIGEST_BACKUP_REMOTE` (defaults to `gcs`). The
 script waits for the installed combined collection job to stop. It aborts if
-launchd status cannot be read or collection remains active for 30 minutes. It
-then:
+launchd status cannot be read or collection remains active for 30 minutes. The
+agent fires again at 10:15, 14:15, and 18:15 on the same Sunday, and each
+attempt exits before reading Proton Pass when `data/state/backup.last-success`
+already names the current day. A completed copy writes that file, so a
+postponed 06:15 attempt costs a delay rather than a week. It then:
 
 1. Takes a consistent `sqlite3 .backup` snapshot of `silver.sqlite` into a
    temporary staging directory.
@@ -1156,9 +1183,10 @@ Use a private `STANDARD` bucket in an Always Free region (`us-central1`,
 `us-west1`, `us-east1`) with uniform bucket-level access, public access
 prevention enforced, and 7 day soft delete. The script logs to
 `data/logs/backup.log`. Files on the bucket are never deleted; the backup only
-grows. A launchd agent runs the script every Sunday at 06:15, after the weekly
-sync. Install the agent with `scripts/install-backup-scheduler.sh` and remove
-it with `scripts/install-backup-scheduler.sh --remove`.
+grows. A launchd agent runs the script every Sunday at 06:15, 10:15, 14:15,
+and 18:15, after the weekly sync. Install the agent with
+`scripts/install-backup-scheduler.sh` and remove it with
+`scripts/install-backup-scheduler.sh --remove`.
 
 The service-account JSON is stored in Proton Pass as the hidden field
 `service-account-json` of the `x-digest-gcs-backup` item in the machine's
@@ -1166,8 +1194,9 @@ secrets vault. The script runs `pass-cli item view` and exports the result as
 `RCLONE_GCS_SERVICE_ACCOUNT_CREDENTIALS` for `rclone`. A missing item or a
 failed read stops the backup instead of falling back silently.
 
-`pass-cli` needs `PROTON_PASS_KEY_PROVIDER` from the environment: both x-digest
-LaunchAgents set it, and a shell that sources the local profile has it too.
+`pass-cli` needs `PROTON_PASS_KEY_PROVIDER` from the environment: the
+installers write it into every x-digest LaunchAgent, and a shell that sources
+the local profile has it too.
 Without it, `pass-cli` looks for the session key in the OS keyring and cannot
 open its local database.
 
@@ -1356,9 +1385,11 @@ account. The CLI runs commands manually, and a launchd LaunchAgent runs
 `scripts/sync-all.sh` weekly on Sunday at 06:00. The agent is installed with
 `scripts/install-scheduler.sh`, which writes the plist to
 `~/Library/LaunchAgents/com.x-digest.sync.plist` and loads it into the user
-session. The agent writes its output to `data/logs/scheduler.out.log` and
-`data/logs/scheduler.err.log`. Remove the agent with
-`scripts/install-scheduler.sh --remove`.
+session. The wrapper stamps every output line and appends it to
+`data/logs/scheduler-<YYYY-MM-DD>.log`, so one file covers one day and an old
+traceback cannot be read as current. launchd still records the same output in
+`data/logs/scheduler.out.log` and `data/logs/scheduler.err.log`. Remove the
+agent with `scripts/install-scheduler.sh --remove`.
 
 The wrapper runs X sync, then Brave sync, using an absolute uv executable and
 `--extra brave` for both stages. Both stages run even if one fails; either
@@ -1366,6 +1397,8 @@ failure produces a nonzero exit. Sequential execution respects the shared lock.
 The working directory is the project root. X uses the token in `state_dir`;
 Brave uses `XDIGEST_BRAVE_PROFILE` or `Default`.
 
+The installers write `PROTON_PASS_KEY_PROVIDER=fs` into each agent, so a
+reinstall keeps the `pass-cli` environment the credential reads depend on.
 Re-run the installer to replace an existing X-only job. The label and log paths
 stay unchanged. `RunAtLoad=false` prevents immediate collection on installation
 or login. Updating code alone does not replace an installed plist. Donsetch must
@@ -1373,17 +1406,24 @@ be available to the same macOS user. Launchd needs permission to read Brave;
 a successful Terminal run does not verify that permission.
 
 The optional `scripts/zshrc-init.sh` hook calls `scripts/weekly-shell-trigger.sh`.
-Source the hook from `~/.zshrc` to enable it. The first shell each ISO week
+Set `XDIGEST_PROJECT_DIR` to the absolute checkout path in `~/.zshrc`, then
+source the hook to enable it. The tracked hook contains no checkout path.
+The first shell each ISO week
 starts collection after 1800 seconds. The trigger checks launchd state before
 starting backup and skips backup on inspection failure or a 30-minute timeout.
 The stamp and trigger log are in `data/logs/`. The stamp records dispatch, not
 successful collection, and does not suppress the separate calendar run.
 
-A second LaunchAgent runs the weekly Google Cloud Storage backup every Sunday
-at 06:15, after the sync agent. It is installed with
-`scripts/install-backup-scheduler.sh` and removed with the `--remove` flag.
-The backup script reads its credential from the explicit login-keychain path.
-See section 14.2 for the backup behavior and SSH setup instructions.
+A second LaunchAgent runs the Google Cloud Storage backup every Sunday at
+06:15, 10:15, 14:15, and 18:15, after the sync agent. It is installed with
+`scripts/install-backup-scheduler.sh` and removed with the `--remove` flag. The
+backup script reads its credential from Proton Pass through `pass-cli`. See
+section 14.2 for the backup behavior and SSH setup instructions.
+
+A third LaunchAgent runs `x-digest health --notify` every day at 07:00, after
+the Sunday collection and backup windows. It is installed with
+`scripts/install-health-scheduler.sh` and removed with the `--remove` flag. It
+writes to `data/logs/health.out.log` and `data/logs/health.err.log`.
 
 There are no staging or production environments, CI workflows, containers, or
 release automation in the repository. A local release consists of:

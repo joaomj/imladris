@@ -21,6 +21,22 @@ DEST="${REMOTE}:${BUCKET}"
 LOG_DIR="$PROJECT_DIR/data/logs"
 LOG_FILE="$LOG_DIR/backup.log"
 
+log() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "$LOG_FILE"
+}
+
+# One Sunday attempt wins; later attempts exit before reading Proton Pass.
+STATE_DIR="$PROJECT_DIR/data/state"
+SUCCESS_STAMP="$STATE_DIR/backup.last-success"
+
+mkdir -p "$LOG_DIR" "$STATE_DIR"
+log "backup start"
+# The agent fires several times on Sunday. One successful copy is enough.
+if [[ -f "$SUCCESS_STAMP" && "$(cut -c1-10 "$SUCCESS_STAMP")" == "$(date '+%Y-%m-%d')" ]]; then
+    log "backup already succeeded today; skipping"
+    exit 0
+fi
+
 RCLONE_BIN="$(command -v rclone || true)"
 if [[ -z "$RCLONE_BIN" ]]; then
     RCLONE_BIN="$HOME/homebrew/bin/rclone"
@@ -45,15 +61,9 @@ if [[ -z "${RCLONE_GCS_SERVICE_ACCOUNT_CREDENTIALS:-}" ]]; then
     export RCLONE_GCS_SERVICE_ACCOUNT_CREDENTIALS="$CREDENTIALS"
 fi
 
-log() {
-    echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "$LOG_FILE"
-}
-
 STAGING="$(mktemp -d)"
 trap 'rm -rf "$STAGING"' EXIT
 
-mkdir -p "$LOG_DIR"
-log "backup start"
 # The calendar backup must also wait for both collection stages to finish.
 if [[ -f "$HOME/Library/LaunchAgents/com.x-digest.sync.plist" ]]; then
     waited=0
@@ -88,3 +98,5 @@ sqlite3 "$PROJECT_DIR/data/silver.sqlite" ".backup '$STAGING/silver.sqlite'"
     --fast-list \
     --log-file "$LOG_FILE"
 log "backup end"
+printf '%s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" > "$SUCCESS_STAMP.tmp"
+mv "$SUCCESS_STAMP.tmp" "$SUCCESS_STAMP"
