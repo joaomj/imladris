@@ -12,6 +12,7 @@ from .db import Database
 
 BACKUP_STAMP_NAME = "backup.last-success"
 DIGEST_EVENTS = ("digest_sent", "digest_failed", "digest_partial")
+SNAPSHOT_EVENTS = ("snapshot_archived", "snapshot_deduped")
 DETAIL_CHARS = 300
 
 
@@ -44,7 +45,7 @@ class Finding:
 
 
 class HealthCheck:
-    """Report stalled runs, missing digests, and an aging backup."""
+    """Report stalled runs, missing digests, an aging backup, and a stale reading list."""
 
     def __init__(self, settings: Settings, database: Database | None = None) -> None:
         self.settings = settings
@@ -58,6 +59,7 @@ class HealthCheck:
             *self._latest_run(current),
             *self._digest(current),
             *self._backup(current),
+            *self._saved(current),
         ]
         return {
             "status": "attention" if findings else "ok",
@@ -200,6 +202,32 @@ class HealthCheck:
                 Finding(
                     "backup_stale",
                     f"latest successful backup finished {finished.isoformat()}, more than "
+                    f"{self.settings.health_max_age_days} days ago",
+                )
+            ]
+        return []
+
+    def _saved(self, now: datetime) -> list[Finding]:
+        """Flag a Brave reading list that has not been read for the whole cadence."""
+        placeholders = ",".join("?" for _ in SNAPSHOT_EVENTS)
+        with self.database.connect() as connection:
+            row = connection.execute(
+                f"""SELECT occurred_at FROM run_events
+                    WHERE event IN ({placeholders})
+                    ORDER BY occurred_at DESC LIMIT 1""",
+                SNAPSHOT_EVENTS,
+            ).fetchone()
+        if row is None:
+            return []
+        read_at = _parse_timestamp(row["occurred_at"])
+        if read_at is None:
+            return []
+        age = now - read_at
+        if age > timedelta(days=self.settings.health_max_age_days):
+            return [
+                Finding(
+                    "saved_stale",
+                    f"latest Brave reading-list read finished {row['occurred_at']}, more than "
                     f"{self.settings.health_max_age_days} days ago",
                 )
             ]

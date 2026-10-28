@@ -5,28 +5,41 @@ a schedule. Run commands from the repository root.
 
 ## Automated Weekly Sync
 
-Install the launchd agents for combined collection every Sunday at 06:00,
-GCS backup at 06:15, and a daily problem report at 07:00. The collection job
-runs X sync, then Brave sync. Both stages run even if one fails; the job
-reports failure if either stage fails. The backup waits for the combined job
-to finish, up to 30 minutes, and retries at 10:15, 14:15, and 18:15 on Sunday.
-It skips an attempt once that day's copy has succeeded.
+Two mechanisms cover the two sources. A launchd agent collects X bookmarks
+every Sunday at 06:00. The Brave reading list is collected from an interactive
+shell, because its LevelDB store sits behind macOS Full Disk Access, which a
+terminal application holds and a launchd job does not. GCS backup runs every
+Sunday at 06:15, 10:15, 14:15, and 18:15, and a daily problem report at 07:00.
 
-Re-run the installer to replace an existing X-only job. It retains the same
-launchd label and schedule and does not start collection immediately.
-Brave uses `XDIGEST_BRAVE_PROFILE` or `Default`; Donsetch must be installed
-for the same macOS user. The launchd process must have permission to read
-Brave's profile. A successful Terminal run alone does not verify this access.
+Brave uses `XDIGEST_BRAVE_PROFILE` or `Default`; Donsetch must be installed for
+the same macOS user. The shell that runs the collection must be able to read
+Brave's profile. Confirm it before relying on the schedule:
 
 ```bash
+uv run --extra brave x-digest brave-sync
+```
+
+Run that once before installing. If it fails with `Operation not permitted`,
+grant Full Disk Access to the terminal application you run it from in System
+Settings, Privacy & Security, Full Disk Access. Granting it to the terminal is
+what makes the scheduled shell run work; no launchd job reads Brave's files.
+
+Sync the environment, then install the agents:
+
+```bash
+uv sync --extra brave
 ./scripts/install-scheduler.sh
 ./scripts/install-backup-scheduler.sh
 ./scripts/install-health-scheduler.sh
 ```
 
-The optional shell trigger starts collection from the first interactive shell
-each ISO week, after a 30-minute delay. It starts backup after collection ends.
-Set the checkout path and source the hook in `~/.zshrc`:
+The X agent runs `x-digest sync` with the project interpreter. The backup
+waits while that job runs, up to 30 minutes, and skips an attempt once that
+day's copy has succeeded.
+
+The shell trigger collects the Brave reading list from the first interactive
+shell of each ISO week, after a 30-minute delay, then starts the backup. Point
+it at the checkout and source the hook in `~/.zshrc`:
 
 ```sh
 XDIGEST_PROJECT_DIR="/absolute/path/to/imladris"
@@ -35,8 +48,9 @@ XDIGEST_PROJECT_DIR="/absolute/path/to/imladris"
 
 Keep this path in your local shell configuration. Do not edit the tracked hook
 for a specific computer. The scheduler installer does not add the shell hook.
-Progress lands in `data/logs/weekly-trigger.log` with a once-per-week
-stamp at `data/logs/weekly-shell-trigger.stamp`.
+Progress lands in `data/logs/weekly-trigger.log` with a once-per-week stamp at
+`data/logs/weekly-shell-trigger.stamp`. A week with no interactive shell gets
+no Brave collection; the next shell that opens starts one.
 
 Remove an agent:
 
@@ -46,16 +60,24 @@ Remove an agent:
 ./scripts/install-health-scheduler.sh --remove
 ```
 
-Trigger the first run immediately:
+Trigger the first X run immediately:
 
 ```bash
 launchctl kickstart "gui/$(id -u)/com.x-digest.sync"
 ```
 
-Collection output lands in `data/logs/scheduler-<date>.log` with one
-timestamp per line, so a traceback from an earlier run cannot be mistaken for
-today's. See [Deployment and release](tech-context.md#17-deployment-and-release)
-for the agent behavior.
+Trigger the Brave collection and backup without waiting for a new week by
+removing the stamp first:
+
+```bash
+rm data/logs/weekly-shell-trigger.stamp
+./scripts/weekly-shell-trigger.sh 0
+```
+
+Both paths write one timestamp per output line, so a traceback from an earlier
+run cannot be mistaken for today's. See
+[Deployment and release](tech-context.md#17-deployment-and-release) for the
+agent behavior.
 
 ## Daily problem report
 
@@ -75,6 +97,7 @@ It reports these findings:
 | `run_stalled` | A run is still marked `running` past `XDIGEST_HEALTH_STUCK_RUN_MINUTES` (default 120). |
 | `run_failed` | The latest run finished with status `failed`. |
 | `run_missing` | The latest run started more than `XDIGEST_HEALTH_MAX_AGE_DAYS` (default 8) days ago. |
+| `saved_stale` | The newest Brave reading-list read finished more than `XDIGEST_HEALTH_MAX_AGE_DAYS` days ago, so the shell trigger has not run. |
 | `digest_incomplete` | The newest digest event in that window is a failure or a partial delivery, not a sent digest. |
 | `backup_missing` | The backup log exists but no successful copy is recorded. |
 | `backup_stale` | The last successful copy is older than `XDIGEST_HEALTH_MAX_AGE_DAYS` days. |
@@ -198,7 +221,9 @@ Requirements:
 
   `pass-cli` runs under launchd with a minimal environment, so both x-digest
   jobs set `PROTON_PASS_KEY_PROVIDER`. Without it `pass-cli` looks for the
-  session key in the OS keyring and cannot open its local database.
+  session key in the OS keyring and cannot open its local database. The
+  installers also put the directory that holds `pass-cli` on the job's `PATH`,
+  because launchd does not inherit the interactive shell's search path.
 
   Verify the stored JSON without printing it:
 

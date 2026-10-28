@@ -108,6 +108,20 @@ class SavedPipeline:
             )
         self.log.emit(run_id, event, level, stage=stage, **details)
 
+    def _report_fetch_misses(self, run_id: str, counts: dict[str, int]) -> None:
+        """Log unfetchable URLs as a warning; paywalls and bot blocks are normal."""
+        if not (counts["failed"] or counts["exhausted"] or counts["fulltext_failed"]):
+            return
+        self._event(
+            run_id,
+            "pipeline",
+            "fetch_incomplete",
+            "warning",
+            failed=counts["failed"],
+            exhausted=counts["exhausted"],
+            fulltext_failed=counts["fulltext_failed"],
+        )
+
     def _finish(
         self, run_id: str, status: str, counts: dict[str, int], error: str | None = None
     ) -> None:
@@ -229,14 +243,9 @@ class SavedPipeline:
                 )
                 counts.update(fulltext_counts)
                 self._event(run_id, "fulltext", "fulltext_completed", counts=fulltext_counts)
-                incomplete = counts["failed"] or counts["exhausted"] or counts["fulltext_failed"]
                 self.bronze.write_run_manifest(run_id)
-                self._finish(
-                    run_id,
-                    "failed" if incomplete else "success",
-                    counts,
-                    "Some saved URLs or full-text lookups are incomplete" if incomplete else None,
-                )
+                self._report_fetch_misses(run_id, counts)
+                self._finish(run_id, "success", counts, None)
                 self._event(run_id, "pipeline", "completed", counts=counts)
                 return {"run_id": run_id, **counts}
         except Exception as error:

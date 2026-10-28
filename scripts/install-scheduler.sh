@@ -5,7 +5,14 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LABEL="com.x-digest.sync"
 PLIST="$HOME/Library/LaunchAgents/${LABEL}.plist"
-UV_BIN="$(command -v uv || true)"
+VENV_PYTHON="$PROJECT_DIR/.venv/bin/python"
+PASS_CLI_BIN="$(command -v pass-cli || true)"
+# launchd starts agents with a minimal PATH, so the directory that holds
+# pass-cli is added here; Proton Pass lookups fail without it.
+JOB_PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+if [[ -n "$PASS_CLI_BIN" ]]; then
+    JOB_PATH="$(dirname "$PASS_CLI_BIN"):${JOB_PATH}"
+fi
 
 usage() {
     echo "usage: install-scheduler.sh [--remove]"
@@ -25,12 +32,11 @@ if [[ -n "${1:-}" ]]; then
     usage
     exit 2
 fi
-if [[ -z "$UV_BIN" ]]; then
-    echo "uv was not found in PATH" >&2
-    exit 1
-fi
-if [[ ! -r "$PROJECT_DIR/scripts/sync-all.sh" ]]; then
-    echo "sync wrapper not found or not readable: $PROJECT_DIR/scripts/sync-all.sh" >&2
+# The agent runs the project interpreter directly, so Full Disk Access can be
+# granted to that one binary instead of the whole shell.
+if [[ ! -x "$VENV_PYTHON" ]]; then
+    echo "python interpreter not found: $VENV_PYTHON" >&2
+    echo "Run 'uv sync --extra brave' in $PROJECT_DIR first." >&2
     exit 1
 fi
 
@@ -45,9 +51,10 @@ cat > "$PLIST" <<EOF
     <string>${LABEL}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/bin/bash</string>
-        <string>${PROJECT_DIR}/scripts/sync-all.sh</string>
-        <string>${UV_BIN}</string>
+        <string>${VENV_PYTHON}</string>
+        <string>-m</string>
+        <string>x_digest</string>
+        <string>sync</string>
     </array>
     <key>WorkingDirectory</key>
     <string>${PROJECT_DIR}</string>
@@ -66,6 +73,8 @@ cat > "$PLIST" <<EOF
     <string>${PROJECT_DIR}/data/logs/scheduler.err.log</string>
     <key>EnvironmentVariables</key>
     <dict>
+        <key>PATH</key>
+        <string>${JOB_PATH}</string>
         <key>PROTON_PASS_KEY_PROVIDER</key>
         <string>fs</string>
     </dict>
@@ -79,4 +88,4 @@ EOF
 
 launchctl bootout "gui/$(id -u)" "$PLIST" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
-echo "installed ${LABEL}: X and Brave collection every Sunday at 06:00"
+echo "installed ${LABEL}: X collection every Sunday at 06:00"

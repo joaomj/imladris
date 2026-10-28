@@ -1404,21 +1404,37 @@ bound and then run `verify --full`.
 ## 17. Deployment and Release
 
 There is no server deployment. The application runs on the owner's macOS user
-account. The CLI runs commands manually, and a launchd LaunchAgent runs
-`scripts/sync-all.sh` weekly on Sunday at 06:00. The agent is installed with
-`scripts/install-scheduler.sh`, which writes the plist to
-`~/Library/LaunchAgents/com.x-digest.sync.plist` and loads it into the user
-session. The wrapper stamps every output line and appends it to
-`data/logs/scheduler-<YYYY-MM-DD>.log`, so one file covers one day and an old
-traceback cannot be read as current. launchd still records the same output in
-`data/logs/scheduler.out.log` and `data/logs/scheduler.err.log`. Remove the
-agent with `scripts/install-scheduler.sh --remove`.
+account. The CLI runs commands manually. Two mechanisms cover the schedules,
+split by the permission each source needs.
 
-The wrapper runs X sync, then Brave sync, using an absolute uv executable and
-`--extra brave` for both stages. Both stages run even if one fails; either
-failure produces a nonzero exit. Sequential execution respects the shared lock.
-The working directory is the project root. X uses the token in `state_dir`;
-Brave uses `XDIGEST_BRAVE_PROFILE` or `Default`.
+A launchd LaunchAgent runs `x-digest sync` for X bookmarks on Sunday at 06:00.
+`scripts/install-scheduler.sh` writes the plist to
+`~/Library/LaunchAgents/com.x-digest.sync.plist` and loads it into the user
+session. The plist names the project interpreter, `.venv/bin/python`, as the
+program, so the job does not depend on the shell environment. Remove it with
+`scripts/install-scheduler.sh --remove`.
+
+The Brave reading list runs from `scripts/weekly-shell-trigger.sh`, which
+starts from the first interactive shell of each ISO week. Brave's LevelDB store
+sits behind Full Disk Access, a permission macOS grants to an application: the
+terminal holds it, a launchd job does not. Running the stage in the shell's own
+process tree keeps the permission, and a backgrounded child keeps it after the
+shell exits. The trigger stamps every line of stage output into
+`data/logs/weekly-trigger.log` and starts the backup agent afterwards.
+
+Both paths keep one timestamp per output line, so a traceback from an earlier
+run cannot be read as current. `x_digest/__main__.py` exists so the trigger can
+run the installed package as `python -m x_digest brave-sync`. Sequential
+execution respects the shared lock. The working directory is the project root.
+X uses the token in `state_dir`; Brave uses `XDIGEST_BRAVE_PROFILE` or
+`Default`. The environment must include the Brave extra, so run
+`uv sync --extra brave` before installing or upgrading.
+
+A run that archives a snapshot and syncs it stays `success` even when some
+saved URLs cannot be fetched; those misses are counted and logged as
+`fetch_incomplete`, because paywalls and bot blocks are normal. Authentication,
+permission, and database errors still fail the run, and the daily `health`
+report names it.
 
 The installers write `PROTON_PASS_KEY_PROVIDER=fs` into each agent, so a
 reinstall keeps the `pass-cli` environment the credential reads depend on.

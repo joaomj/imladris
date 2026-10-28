@@ -348,16 +348,12 @@ def test_bronze_replay_rebuilds_saved_items(
     assert _row(database, url)["attempts"] == 1
 
 
-def test_brave_sync_cli_exit_code_reflects_failures(
+def test_brave_sync_cli_exit_code_ignores_fetch_misses(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("XDIGEST_VAULT_PATH", str(tmp_path))
     monkeypatch.setattr(
         cli.SavedPipeline, "sync", lambda _self, **_kwargs: {"run_id": "r", "failed": 2}
-    )
-    assert cli.main(["brave-sync", "--profile", "Default"]) == 1
-    monkeypatch.setattr(
-        cli.SavedPipeline, "sync", lambda _self, **_kwargs: {"run_id": "r", "failed": 0}
     )
     assert cli.main(["brave-sync", "--profile", "Default"]) == 0
 

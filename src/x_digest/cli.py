@@ -311,7 +311,7 @@ def _handle_saved_sync(args: argparse.Namespace, settings: Any, correlation_id: 
     )
     log.emit(correlation_id, "command_completed", "info", command="brave-sync", result=result)
     _print(result)
-    return 1 if any(result.get(key, 0) for key in ("failed", "exhausted", "fulltext_failed")) else 0
+    return 0
 
 
 def _handle_saved_search(args: argparse.Namespace, database: Database) -> list[dict[str, Any]]:

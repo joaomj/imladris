@@ -5,6 +5,13 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LABEL="com.x-digest.backup"
 PLIST="$HOME/Library/LaunchAgents/${LABEL}.plist"
+PASS_CLI_BIN="$(command -v pass-cli || true)"
+# launchd starts agents with a minimal PATH, so the directory that holds
+# pass-cli is added here; Proton Pass lookups fail without it.
+JOB_PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+if [[ -n "$PASS_CLI_BIN" ]]; then
+    JOB_PATH="$(dirname "$PASS_CLI_BIN"):${JOB_PATH}"
+fi
 
 usage() {
     echo "usage: install-backup-scheduler.sh [--remove]"
@@ -78,6 +85,8 @@ cat > "$PLIST" <<EOF
     </array>
     <key>EnvironmentVariables</key>
     <dict>
+        <key>PATH</key>
+        <string>${JOB_PATH}</string>
         <key>PROTON_PASS_KEY_PROVIDER</key>
         <string>fs</string>
     </dict>
