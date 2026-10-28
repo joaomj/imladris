@@ -48,7 +48,12 @@ fi
 
 # The GCS service-account JSON lives in Proton Pass. pass-cli needs the Proton
 # Pass environment the shell uses; the LaunchAgent sets PROTON_PASS_KEY_PROVIDER.
-GCS_CREDENTIAL_REFERENCE="pass://your-vault/x-digest-gcs-backup/service-account-json"
+VAULT="${XDIGEST_SECRETS_VAULT:-}"
+if [[ -z "$VAULT" ]]; then
+    echo "XDIGEST_SECRETS_VAULT is not set. Set it in .env to the Proton Pass vault that holds the backup credentials." >&2
+    exit 1
+fi
+GCS_CREDENTIAL_REFERENCE="pass://${VAULT}/x-digest-gcs-backup/service-account-json"
 if [[ -z "${RCLONE_GCS_SERVICE_ACCOUNT_CREDENTIALS:-}" ]]; then
     if ! PASS_CLI="$(command -v pass-cli)"; then
         echo "pass-cli was not found; it is required to read the backup credentials" >&2

@@ -130,11 +130,16 @@ TELEGRAM_USER_ID=your-chat-id
 XDIGEST_LLM_API_KEY=your-openrouter-key
 ```
 
-Store the OpenRouter key in Proton Pass instead of `.env`: put it in the
-machine's secrets vault (`XDIGEST_SECRETS_VAULT`, `your-vault` by default) as
-the hidden field `api-key` of the custom item `x-digest-openrouter`. A set
-`XDIGEST_LLM_API_KEY` value takes precedence over the Proton Pass entry. Set
-`XDIGEST_SECRETS_VAULT` to an empty value to disable the lookup.
+Store the OpenRouter key in Proton Pass instead of `.env`: put it in your
+secrets vault as the hidden field `api-key` of the custom item
+`x-digest-openrouter`, and name that vault in `.env`:
+
+```text
+XDIGEST_SECRETS_VAULT=your-vault-name
+```
+
+A set `XDIGEST_LLM_API_KEY` value takes precedence over the Proton Pass entry.
+Leave `XDIGEST_SECRETS_VAULT` unset or empty to disable the lookup.
 
 `XDIGEST_TELEGRAM_BOT_TOKEN` and `XDIGEST_TELEGRAM_CHAT_ID` work as prefixed
 alternatives. Create the bot with `@BotFather`, send it `/start`, then read
@@ -209,14 +214,14 @@ Requirements:
   ```
 
   The backup reads the service-account JSON from Proton Pass. Store it in the
-  machine's secrets vault as the hidden field `service-account-json` of the
-  custom item `x-digest-gcs-backup`:
+  vault named by `XDIGEST_SECRETS_VAULT` as the hidden field
+  `service-account-json` of the custom item `x-digest-gcs-backup`:
 
   ```bash
   chmod 600 "$HOME/.config/gcloud/your-key.json"
   jq -Rs '{title: "x-digest-gcs-backup", note: "GCS service-account JSON for the monthly backup.", sections: [{section_name: "Credentials", fields: [{field_name: "service-account-json", field_type: "hidden", value: (rtrimstr("\n"))}]}]}' \
     "$HOME/.config/gcloud/your-key.json" \
-    | pass-cli item create custom --vault-name your-vault --from-template -
+    | pass-cli item create custom --vault-name your-vault-name --from-template -
   ```
 
   `pass-cli` runs under launchd with a minimal environment, so both x-digest
@@ -228,7 +233,7 @@ Requirements:
   Verify the stored JSON without printing it:
 
   ```bash
-  pass-cli item view 'pass://your-vault/x-digest-gcs-backup/service-account-json' \
+  pass-cli item view 'pass://your-vault-name/x-digest-gcs-backup/service-account-json' \
     | uv run python -c "import json,sys; d=json.load(sys.stdin); print('Proton Pass OK:', d.get('type') == 'service_account')"
   ```
 

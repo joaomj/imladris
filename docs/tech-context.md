@@ -611,7 +611,7 @@ limits when `Settings` loads.
 | `XDIGEST_X_REDIRECT_URI` | `http://localhost:8080/callback` | OAuth callback URI. |
 | `XDIGEST_X_SCOPE` | `bookmark.read tweet.read users.read offline.access` | OAuth read scopes. |
 | `XDIGEST_KEYCHAIN_SERVICE` | `x-digest` | Keychain service name, used only for the optional Telegram token fallback. |
-| `XDIGEST_SECRETS_VAULT` | `your-vault` | Proton Pass vault that holds the static secrets. An empty value disables the lookup. |
+| `XDIGEST_SECRETS_VAULT` | unset | Proton Pass vault that holds the static secrets; required for Proton Pass lookups. An unset or empty value disables them. |
 | `XDIGEST_STATE_DIR` | `$XDG_STATE_HOME/x-digest` | Directory for the OAuth token and PKCE state. |
 | `XDIGEST_TELEGRAM_BOT_TOKEN` | None | Telegram bot token. `TELEGRAM_BOT_TOKEN` is accepted as an alias. |
 | `XDIGEST_TELEGRAM_CHAT_ID` | None | Telegram recipient chat ID. `TELEGRAM_USER_ID` is accepted as an alias. |
@@ -1228,7 +1228,7 @@ Create the item without putting the JSON on the command line:
 ```bash
 jq -Rs '{title: "x-digest-gcs-backup", note: "GCS service-account JSON for the monthly backup.", sections: [{section_name: "Credentials", fields: [{field_name: "service-account-json", field_type: "hidden", value: (rtrimstr("\n"))}]}]}' \
   "$HOME/.config/gcloud/your-key.json" \
-  | pass-cli item create custom --vault-name your-vault --from-template -
+  | pass-cli item create custom --vault-name your-vault-name --from-template -
 ```
 
 Run `scripts/backup-to-drive.sh` before you remove the source JSON file. A

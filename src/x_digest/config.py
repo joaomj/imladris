@@ -148,7 +148,7 @@ class Settings(BaseSettings):
     x_redirect_uri: str = "http://localhost:8080/callback"
     x_scope: str = DEFAULT_X_SCOPE
     keychain_service: str = "x-digest"
-    secrets_vault: str | None = "your-vault"
+    secrets_vault: str | None = None
     state_dir: Path = Field(default_factory=_default_state_dir)
     max_results_per_page: int = Field(default=100, ge=1, le=100)
     max_retries: int = Field(default=3, ge=0, le=10)
