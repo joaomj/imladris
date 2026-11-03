@@ -48,13 +48,7 @@ cat > "$PLIST" <<EOF
     <string>${LABEL}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>${UV_BIN}</string>
-        <string>run</string>
-        <string>--project</string>
-        <string>${PROJECT_DIR}</string>
-        <string>x-digest</string>
-        <string>health</string>
-        <string>--notify</string>
+        <string>${PROJECT_DIR}/scripts/x-digest-health</string>
     </array>
     <key>WorkingDirectory</key>
     <string>${PROJECT_DIR}</string>
@@ -73,6 +67,8 @@ cat > "$PLIST" <<EOF
     <dict>
         <key>PATH</key>
         <string>${JOB_PATH}</string>
+        <key>UV_BIN</key>
+        <string>${UV_BIN}</string>
         <key>PROTON_PASS_KEY_PROVIDER</key>
         <string>fs</string>
     </dict>

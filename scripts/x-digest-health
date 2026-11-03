@@ -1,0 +1,5 @@
+#!/bin/sh
+# Daily problem report for launchd. The file name is what macOS shows under
+# Login Items, so the job runs through it instead of calling uv directly.
+cd "$(dirname "$0")/.." || exit 1
+exec "${UV_BIN:-uv}" run --project . x-digest health --notify
