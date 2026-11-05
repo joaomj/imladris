@@ -77,11 +77,10 @@ uv run x-digest sync
 
 ## Set up the Brave Reading List
 
-Install [Donsetch](https://github.com/dondai44423/donsetch), then install the
-optional Brave dependency:
+Install [Donsetch](https://github.com/dondai44423/donsetch), then sync the environment:
 
 ```bash
-uv sync --extra brave
+uv sync
 ```
 
 The collector checks `PATH`, then `~/.local/bin/donsetch`. To use another
@@ -91,7 +90,7 @@ Allow the process running the command to read Brave's profile on macOS.
 Brave can remain open; collection does not change its entries or read status.
 
 ```bash
-uv run --extra brave x-digest brave-sync --profile Default
+uv run x-digest brave-sync --profile Default
 ```
 
 Replace `Default` with your profile name, or set `XDIGEST_BRAVE_PROFILE` in

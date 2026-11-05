@@ -112,11 +112,11 @@ Install [Donsetch](https://github.com/dondai44423/donsetch) for webpage extracti
 The command checks `PATH`, then `~/.local/bin/donsetch` for a user-local installation.
 Set `XDIGEST_DONSETCH_BIN` to select a different executable. A missing executable
 stops the run before reading Brave or consuming any item retries.
-The optional `brave` extra contains one pure-Python LevelDB reader; no system
+The project depends on one pure-Python LevelDB reader; no system
 LevelDB or Snappy installation is required.
 
 ```bash
-uv run --extra brave x-digest brave-sync --profile Default
+uv run x-digest brave-sync --profile Default
 ```
 
 Use `--db-path` to override the profile's `Sync Data/LevelDB` directory.

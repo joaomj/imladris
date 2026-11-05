@@ -24,6 +24,20 @@ def _record_snapshot(database: Database, run_id: str, read_at: datetime) -> None
         )
 
 
+def _record_digest(database: Database, run_id: str, sent_at: datetime) -> None:
+    """Store one finished X run with its sent digest event."""
+    with database.transaction() as connection:
+        connection.execute(
+            "INSERT INTO runs(run_id, started_at, completed_at, status) VALUES (?, ?, ?, ?)",
+            (run_id, sent_at.isoformat(), sent_at.isoformat(), "success"),
+        )
+        connection.execute(
+            """INSERT INTO run_events(run_id, occurred_at, stage, level, event)
+               VALUES (?, ?, ?, ?, ?)""",
+            (run_id, sent_at.isoformat(), "digest", "info", "digest_sent"),
+        )
+
+
 def _codes(settings: Settings, database: Database, now: datetime) -> list[str]:
     report = HealthCheck(settings, database).run(now)
     return [finding["code"] for finding in report["findings"]]
@@ -38,3 +52,16 @@ def test_stale_reading_list_read_is_reported(tmp_path: Path) -> None:
     assert "saved_stale" in _codes(settings, database, now)
     _record_snapshot(database, "new", now)
     assert "saved_stale" not in _codes(settings, database, now)
+
+
+def test_missing_weekly_digest_is_reported(tmp_path: Path) -> None:
+    settings = Settings(vault_path=tmp_path)  # type: ignore[arg-type]
+    database = Database(settings.database_path)
+    database.initialize()
+    now = datetime.now(UTC)
+    _record_digest(database, "old", now - timedelta(days=settings.health_max_age_days + 1))
+    # A recent Brave-only run must not hide the missing X digest.
+    _record_snapshot(database, "brave", now)
+    assert "digest_missing" in _codes(settings, database, now)
+    _record_digest(database, "new", now)
+    assert "digest_missing" not in _codes(settings, database, now)

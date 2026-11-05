@@ -36,7 +36,7 @@ fi
 # granted to that one binary instead of the whole shell.
 if [[ ! -x "$VENV_PYTHON" ]]; then
     echo "python interpreter not found: $VENV_PYTHON" >&2
-    echo "Run 'uv sync --extra brave' in $PROJECT_DIR first." >&2
+    echo "Run 'uv sync' in $PROJECT_DIR first." >&2
     exit 1
 fi
 
@@ -51,10 +51,7 @@ cat > "$PLIST" <<EOF
     <string>${LABEL}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>${VENV_PYTHON}</string>
-        <string>-m</string>
-        <string>x_digest</string>
-        <string>sync</string>
+        <string>${PROJECT_DIR}/scripts/x-digest-sync</string>
     </array>
     <key>WorkingDirectory</key>
     <string>${PROJECT_DIR}</string>
@@ -67,6 +64,8 @@ cat > "$PLIST" <<EOF
         <key>Minute</key>
         <integer>0</integer>
     </dict>
+    <key>StartInterval</key>
+    <integer>3600</integer>
     <key>StandardOutPath</key>
     <string>${PROJECT_DIR}/data/logs/scheduler.out.log</string>
     <key>StandardErrorPath</key>
@@ -81,11 +80,11 @@ cat > "$PLIST" <<EOF
     <key>ProcessType</key>
     <string>Background</string>
     <key>RunAtLoad</key>
-    <false/>
+    <true/>
 </dict>
 </plist>
 EOF
 
 launchctl bootout "gui/$(id -u)" "$PLIST" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
-echo "installed ${LABEL}: X collection every Sunday at 06:00"
+echo "installed ${LABEL}: X collection every Sunday at 06:00, or at the next start when missed"

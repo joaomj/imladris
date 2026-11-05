@@ -115,15 +115,14 @@ class HealthCheck:
         return []
 
     def _digest(self, now: datetime) -> list[Finding]:
-        """Flag the newest digest event when it is not a successful send."""
-        cutoff = (now - timedelta(days=self.settings.health_max_age_days)).isoformat()
+        """Flag a newest digest event that is too old or not a successful send."""
         placeholders = ",".join("?" for _ in DIGEST_EVENTS)
         with self.database.connect() as connection:
             row = connection.execute(
                 f"""SELECT occurred_at, event, details_json FROM run_events
-                    WHERE event IN ({placeholders}) AND occurred_at >= ?
+                    WHERE event IN ({placeholders})
                     ORDER BY occurred_at DESC LIMIT 1""",
-                (*DIGEST_EVENTS, cutoff),
+                DIGEST_EVENTS,
             ).fetchone()
         from_table = (
             {
@@ -134,10 +133,19 @@ class HealthCheck:
             if row is not None
             else None
         )
-        candidates = [item for item in (from_table, self._logged_digest_event(cutoff)) if item]
+        candidates = [item for item in (from_table, self._logged_digest_event()) if item]
         if not candidates:
             return []
         newest = max(candidates, key=lambda item: item["occurred_at"])
+        occurred = _parse_timestamp(newest["occurred_at"])
+        if occurred is None or now - occurred > timedelta(days=self.settings.health_max_age_days):
+            return [
+                Finding(
+                    "digest_missing",
+                    f"latest digest event {newest['event']} at {newest['occurred_at']}, more "
+                    f"than {self.settings.health_max_age_days} days ago",
+                )
+            ]
         if newest["event"] == "digest_sent":
             return []
         reported = newest["details"].get("reason") or newest["details"].get("error") or ""
@@ -146,7 +154,7 @@ class HealthCheck:
             detail = f"{detail}: {str(reported)[:DETAIL_CHARS]}"
         return [Finding("digest_incomplete", detail)]
 
-    def _logged_digest_event(self, cutoff: str) -> dict[str, Any] | None:
+    def _logged_digest_event(self) -> dict[str, Any] | None:
         """Return the newest digest event that only the application log holds.
 
         A manual `digest --send` has no run row, so its events never reach
@@ -166,7 +174,7 @@ class HealthCheck:
                 if not isinstance(entry, dict) or entry.get("event") not in DIGEST_EVENTS:
                     continue
                 occurred_at = entry.get("timestamp")
-                if not isinstance(occurred_at, str) or occurred_at < cutoff:
+                if not isinstance(occurred_at, str):
                     continue
                 candidate = {
                     "event": entry["event"],

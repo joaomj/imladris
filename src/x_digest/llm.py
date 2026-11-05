@@ -108,7 +108,13 @@ class LlmClient:
         status = response.status_code
         if status == HTTP_OK:
             payload = response.json()
-            content = payload["choices"][0]["message"]["content"]
+            choice = payload["choices"][0]
+            if choice.get("finish_reason") == "length":
+                raise ValueError(
+                    "LLM response was cut off at XDIGEST_LLM_MAX_TOKENS="
+                    f"{self.settings.llm_max_tokens}"
+                )
+            content = choice["message"]["content"]
             if not isinstance(content, str) or not content.strip():
                 raise ValueError("LLM response contained no text")
             return content.strip()

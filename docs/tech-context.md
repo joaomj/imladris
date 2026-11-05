@@ -223,8 +223,8 @@ The full Article body is currently extracted from `article.plain_text`.
 
 ### 2.4 Brave Reading List collection
 
-Run `uv run --extra brave x-digest brave-sync`. X authorization is not required.
-Install Donsetch separately. The optional extra provides the pure-Python
+Run `uv run x-digest brave-sync`. X authorization is not required.
+Install Donsetch separately. The project depends on the pure-Python
 `chromium-reader==0.1.1`; no system LevelDB or Snappy installation is required.
 Donsetch is resolved from `PATH`, then `~/.local/bin/donsetch`, or the configured
 executable. Preflight failure does not consume item retries.
@@ -620,7 +620,7 @@ limits when `Settings` loads.
 | `XDIGEST_LLM_API_KEY` | None | OpenRouter API key. Falls back to the `x-digest-openrouter` Proton Pass item. |
 | `XDIGEST_LLM_MODEL` | `z-ai/glm-5.3-flash` | Digest model routed to the cheapest Zero Data Retention provider. |
 | `XDIGEST_LLM_REASONING_EFFORT` | `low` | Reasoning effort sent as `reasoning.effort`. One of `xhigh`, `high`, `medium`, `low`, `minimal`, `none`. |
-| `XDIGEST_LLM_MAX_TOKENS` | `1200` | Maximum LLM response tokens. Range: 100 to 4000. |
+| `XDIGEST_LLM_MAX_TOKENS` | `4000` | Maximum LLM response tokens. Range: 100 to 4000. |
 | `XDIGEST_LLM_TIMEOUT_SECONDS` | `30.0` | LLM request timeout. Range: greater than 0 and at most 120. |
 | `XDIGEST_DIGEST_MAX_POSTS` | `20` | Maximum posts per digest batch. Range: 1 to 50. |
 | `XDIGEST_DIGEST_MAX_CHARS_PER_POST` | `800` | Upper bound for post body text in the prompt. Range: 100 to 4000. |
@@ -1410,8 +1410,13 @@ split by the permission each source needs.
 A launchd LaunchAgent runs `x-digest sync` for X bookmarks on Sunday at 06:00.
 `scripts/install-scheduler.sh` writes the plist to
 `~/Library/LaunchAgents/com.x-digest.sync.plist` and loads it into the user
-session. The plist names the project interpreter, `.venv/bin/python`, as the
-program, so the job does not depend on the shell environment. Remove it with
+session. The plist runs `scripts/x-digest-sync` at load, at the Sunday time, and every
+hour. The script exits unless the latest Sunday 06:00 is newer than the start
+of the last successful sync, recorded in `data/logs/sync.last-success`. A week
+missed while the Mac was off therefore runs at the next login, and a failed
+run is retried hourly. When the newest digest event is a failure, the script also runs
+`digest --send` each hour to resend the pending batch. The script calls the project interpreter,
+`.venv/bin/python`, so the job does not depend on the shell environment. Remove it with
 `scripts/install-scheduler.sh --remove`.
 
 The Brave reading list runs from `scripts/weekly-shell-trigger.sh`, which
@@ -1427,8 +1432,7 @@ run cannot be read as current. `x_digest/__main__.py` exists so the trigger can
 run the installed package as `python -m x_digest brave-sync`. Sequential
 execution respects the shared lock. The working directory is the project root.
 X uses the token in `state_dir`; Brave uses `XDIGEST_BRAVE_PROFILE` or
-`Default`. The environment must include the Brave extra, so run
-`uv sync --extra brave` before installing or upgrading.
+`Default`. Run `uv sync` before installing or upgrading.
 
 A run that archives a snapshot and syncs it stays `success` even when some
 saved URLs cannot be fetched; those misses are counted and logged as

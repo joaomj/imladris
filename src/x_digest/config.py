@@ -175,7 +175,7 @@ class Settings(BaseSettings):
     llm_api_key: str | None = None
     llm_model: str = DEFAULT_LLM_MODEL
     llm_reasoning_effort: Literal["xhigh", "high", "medium", "low", "minimal", "none"] = "low"
-    llm_max_tokens: int = Field(default=1200, ge=100, le=4000)
+    llm_max_tokens: int = Field(default=4000, ge=100, le=4000)
     llm_timeout_seconds: float = Field(default=30.0, gt=0, le=120)
     health_stuck_run_minutes: int = Field(default=120, ge=5)
     health_max_age_days: int = Field(default=8, ge=1)

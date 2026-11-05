@@ -1,0 +1,27 @@
+#!/bin/sh
+# Weekly X collection for launchd. Due every Sunday at 06:00 local time.
+# launchd starts it at login, at the scheduled time, and hourly, so a week
+# missed while the Mac was off or a failed attempt runs at the next start,
+# and a failed digest delivery is retried.
+# The file name is what macOS shows under Login Items.
+cd "$(dirname "$0")/.." || exit 1
+STAMP_FILE="data/logs/sync.last-success"
+
+# Start of the current due period: the latest Sunday 06:00 that has passed.
+days_back=$(date +%w)
+if [ "$days_back" -eq 0 ] && [ "$(date +%H)" -lt 6 ]; then
+    days_back=7
+fi
+due=$(date -j -v-"${days_back}"d -v6H -v0M -v0S +%s)
+last=$(cat "$STAMP_FILE" 2>/dev/null || echo 0)
+if [ "$last" -lt "$due" ]; then
+    started=$(date +%s)
+    .venv/bin/python -m x_digest sync || exit $?
+    echo "$started" > "$STAMP_FILE"
+fi
+
+# A sync can collect posts and still fail to deliver the digest. The batch
+# stays pending, so resend it until the newest digest event is a success.
+if .venv/bin/python -m x_digest health | grep -q '"digest_incomplete"'; then
+    .venv/bin/python -m x_digest digest --send
+fi

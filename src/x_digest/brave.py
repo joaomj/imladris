@@ -257,13 +257,8 @@ KvReader = Callable[[Path], Iterable[KvRecord]]
 
 
 def default_kv_reader(snapshot: Path) -> Iterable[KvRecord]:
-    """Use the optional pure-Python parser on active snapshot files only."""
-    try:
-        yield from live_records(snapshot, current_manifest_name(snapshot))
-    except ImportError as error:
-        raise BraveReaderError(
-            "Brave ingestion requires chromium-reader; run uv sync --extra brave"
-        ) from error
+    """Use the pure-Python parser on active snapshot files only."""
+    yield from live_records(snapshot, current_manifest_name(snapshot))
 
 
 def read_entries(

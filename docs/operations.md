@@ -6,7 +6,9 @@ a schedule. Run commands from the repository root.
 ## Automated Weekly Sync
 
 Two mechanisms cover the two sources. A launchd agent collects X bookmarks
-every Sunday at 06:00. The Brave reading list is collected from an interactive
+every Sunday at 06:00. When the Mac is off at that time, or the run fails, the
+agent runs it at the next login and then retries hourly until it succeeds. A
+failed digest delivery is also retried hourly. The Brave reading list is collected from an interactive
 shell, because its LevelDB store sits behind macOS Full Disk Access, which a
 terminal application holds and a launchd job does not. GCS backup runs every
 Sunday at 06:15, 10:15, 14:15, and 18:15, and a daily problem report at 07:00.
@@ -16,7 +18,7 @@ the same macOS user. The shell that runs the collection must be able to read
 Brave's profile. Confirm it before relying on the schedule:
 
 ```bash
-uv run --extra brave x-digest brave-sync
+uv run x-digest brave-sync
 ```
 
 Run that once before installing. If it fails with `Operation not permitted`,
@@ -27,7 +29,7 @@ what makes the scheduled shell run work; no launchd job reads Brave's files.
 Sync the environment, then install the agents:
 
 ```bash
-uv sync --extra brave
+uv sync
 ./scripts/install-scheduler.sh
 ./scripts/install-backup-scheduler.sh
 ./scripts/install-health-scheduler.sh
@@ -98,7 +100,8 @@ It reports these findings:
 | `run_failed` | The latest run finished with status `failed`. |
 | `run_missing` | The latest run started more than `XDIGEST_HEALTH_MAX_AGE_DAYS` (default 8) days ago. |
 | `saved_stale` | The newest Brave reading-list read finished more than `XDIGEST_HEALTH_MAX_AGE_DAYS` days ago, so the shell trigger has not run. |
-| `digest_incomplete` | The newest digest event in that window is a failure or a partial delivery, not a sent digest. |
+| `digest_missing` | The newest digest event happened more than `XDIGEST_HEALTH_MAX_AGE_DAYS` days ago, so the weekly X sync has not delivered. |
+| `digest_incomplete` | The newest digest event is a failure or a partial delivery, not a sent digest. |
 | `backup_missing` | The backup log exists but no successful copy is recorded. |
 | `backup_stale` | The last successful copy is older than `XDIGEST_HEALTH_MAX_AGE_DAYS` days. |
 | `backup_timestamp_invalid` | The success stamp holds no parseable timestamp. |

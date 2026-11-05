@@ -79,6 +79,18 @@ def test_llm_rate_limit_retries_once(
     assert calls["count"] == EXPECTED_RETRY_CALLS
 
 
+def test_llm_cut_off_response_names_the_token_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_post(*args: Any, **kwargs: Any) -> SimpleNamespace:  # noqa: ARG001
+        message = {"content": '{"takeaway": "Partial'}
+        return _response(200, {"choices": [{"message": message, "finish_reason": "length"}]})
+
+    monkeypatch.setattr("x_digest.llm.requests.post", fake_post)
+    with pytest.raises(ValueError, match="XDIGEST_LLM_MAX_TOKENS"):
+        LlmClient(_settings(tmp_path)).complete("prompt", "system")
+
+
 def test_llm_never_logs_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_post(*args: Any, **kwargs: Any) -> SimpleNamespace:  # noqa: ARG001
         raise requests.ConnectionError("network down")
