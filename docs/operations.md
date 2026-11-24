@@ -52,7 +52,9 @@ Keep this path in your local shell configuration. Do not edit the tracked hook
 for a specific computer. The scheduler installer does not add the shell hook.
 Progress lands in `data/logs/weekly-trigger.log` with a once-per-week stamp at
 `data/logs/weekly-shell-trigger.stamp`. A week with no interactive shell gets
-no Brave collection; the next shell that opens starts one.
+no Brave collection; the next shell that opens starts one. A failed collection
+clears the stamp, so the next shell retries it; each run logs the terminal
+application that started it.
 
 Remove an agent:
 

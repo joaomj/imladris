@@ -4,6 +4,7 @@
 # already ran. Delay keeps boot and other first-shell agents responsive.
 # Brave's LevelDB sits behind Full Disk Access, which the terminal app
 # holds and a launchd job does not, so this stage runs here.
+# A failed collection clears the stamp so the next shell retries it.
 # Usage: weekly-shell-trigger.sh [delay_seconds]
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -32,7 +33,7 @@ fi
         exit 0
     fi
     current_week > "$STAMP_FILE"
-    log "start week $(current_week)"
+    log "start week $(current_week) terminal=${TERM_PROGRAM:-unknown}"
     PYTHON="$PROJECT_DIR/.venv/bin/python"
     if [ ! -x "$PYTHON" ]; then
         log "interpreter not found: $PYTHON"
@@ -45,6 +46,10 @@ fi
         done < "$capture"
         rm -f "$capture"
         log "brave-sync end exit=$BRAVE_STATUS"
+        if [ "$BRAVE_STATUS" -ne 0 ]; then
+            rm -f "$STAMP_FILE"
+            log "cleared stamp; the next shell retries"
+        fi
     fi
     if [ -f "$BACKUP_PLIST" ] && command -v launchctl >/dev/null 2>&1; then
         launchctl start com.x-digest.backup >> "$PROJECT_DIR/data/logs/weekly-trigger.log" 2>&1 \
