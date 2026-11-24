@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from x_digest import cli, saved_fetch, saved_pipeline
-from x_digest.brave import BraveEntry
+from x_digest.brave import write_export
 from x_digest.config import Settings
 from x_digest.db import Database
 from x_digest.paths import resolve_stored_path
@@ -18,18 +18,15 @@ FETCHED_PAIR = 2
 RETRY_ATTEMPTS = 2
 
 
-def _entry(url: str, title: str = "Title", status: int = 0) -> BraveEntry:
-    return BraveEntry(
-        key=f"reading_list-dt-{url}",
-        entry_id=f"id-{url}",
-        title=title,
-        url=url,
-        creation_us=100,
-        update_us=200,
-        status=status,
-        status_text="unread",
-        profile="Default",
-    )
+def _entry(url: str, title: str = "Title") -> dict[str, object]:
+    """Return one entry as chrome.readingList.query reports it."""
+    return {
+        "url": url,
+        "title": title,
+        "hasBeenRead": False,
+        "creationTime": 100,
+        "lastUpdateTime": 200,
+    }
 
 
 def _page_outcome(url: str, text: str = "page text") -> FetchOutcome:
@@ -98,28 +95,14 @@ class _ScriptFetcher:
 
 def _pipeline(
     tmp_path: Path,
-    entries: list[BraveEntry],
+    entries: list[dict[str, object]],
     fetcher: _ScriptFetcher,
-    monkeypatch: pytest.MonkeyPatch,
     **settings_overrides: object,
 ) -> saved_pipeline.SavedPipeline:
     settings = Settings(vault_path=tmp_path, **settings_overrides)  # type: ignore[arg-type]
-    state = {"entries": entries}
+    write_export(settings.brave_export_path, entries)
     pipeline = saved_pipeline.SavedPipeline(settings)
-
-    def fake_snapshot(_source: Path, _retries: int) -> Path:
-        snapshot = tmp_path / "snapshot"
-        snapshot.mkdir(parents=True, exist_ok=True)
-        return snapshot
-
-    def fake_read(_snapshot: Path, _profile: str) -> tuple[list[BraveEntry], dict[str, object]]:
-        return list(state["entries"]), {"entries": len(state["entries"])}
-
-    monkeypatch.setattr(saved_pipeline.brave, "find_brave_db", lambda _explicit, _profile: tmp_path)
-    pipeline.snapshot_fn = fake_snapshot  # type: ignore[method-assign]
-    pipeline.read_fn = fake_read  # type: ignore[method-assign]
     pipeline.fetcher = fetcher  # type: ignore[assignment]
-    pipeline.state = state  # type: ignore[attr-defined]
     return pipeline
 
 
@@ -218,16 +201,14 @@ def test_fetcher_rejects_private_url_without_network(tmp_path: Path) -> None:
     assert outcome.stage == "validate"
 
 
-def test_two_consecutive_syncs_do_not_refetch(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_two_consecutive_syncs_do_not_refetch(tmp_path: Path) -> None:
     page_url = "https://example.com/a"
     pdf_url = "https://example.com/b.pdf"
     pdf_body = b"%PDF-1.4 fake-bytes"
     fetcher = _ScriptFetcher(
         {page_url: [_page_outcome(page_url)], pdf_url: [_pdf_outcome(pdf_url, pdf_body)]}
     )
-    pipeline = _pipeline(tmp_path, [_entry(page_url), _entry(pdf_url)], fetcher, monkeypatch)
+    pipeline = _pipeline(tmp_path, [_entry(page_url), _entry(pdf_url)], fetcher)
     first = pipeline.sync()
     assert first["fetched"] == FETCHED_PAIR
     assert first["failed"] == 0
@@ -247,10 +228,10 @@ def test_two_consecutive_syncs_do_not_refetch(
     assert _bronze_kind_count(pipeline.database, "saved-pdf-meta") == 1
 
 
-def test_failure_retries_then_succeeds(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_failure_retries_then_succeeds(tmp_path: Path) -> None:
     url = "https://example.com/flaky"
     fetcher = _ScriptFetcher({url: [_failure_outcome(url, "first"), _page_outcome(url, "later")]})
-    pipeline = _pipeline(tmp_path, [_entry(url)], fetcher, monkeypatch)
+    pipeline = _pipeline(tmp_path, [_entry(url)], fetcher)
     first = pipeline.sync()
     assert first["failed"] == 1
     row = _row(pipeline.database, url)
@@ -267,10 +248,10 @@ def test_failure_retries_then_succeeds(tmp_path: Path, monkeypatch: pytest.Monke
     assert row["content_text"] == "later"
 
 
-def test_failures_stop_at_max_attempts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_failures_stop_at_max_attempts(tmp_path: Path) -> None:
     url = "https://example.com/always-down"
     fetcher = _ScriptFetcher({url: [_failure_outcome(url)]})
-    pipeline = _pipeline(tmp_path, [_entry(url)], fetcher, monkeypatch, saved_max_attempts=1)
+    pipeline = _pipeline(tmp_path, [_entry(url)], fetcher, saved_max_attempts=1)
     assert pipeline.sync()["failed"] == 1
     fetcher.calls.clear()
     second = pipeline.sync()
@@ -280,18 +261,14 @@ def test_failures_stop_at_max_attempts(tmp_path: Path, monkeypatch: pytest.Monke
     assert _row(pipeline.database, url)["attempts"] == 1
 
 
-def test_pdf_bytes_unchanged_and_metadata_retained_on_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_pdf_bytes_unchanged_and_metadata_retained_on_failure(tmp_path: Path) -> None:
     pdf_url = "https://example.com/doc.pdf"
     bad_url = "https://example.com/bad"
     pdf_body = b"%PDF-1.4 unchanged-bytes"
     fetcher = _ScriptFetcher(
         {pdf_url: [_pdf_outcome(pdf_url, pdf_body)], bad_url: [_failure_outcome(bad_url, "denied")]}
     )
-    pipeline = _pipeline(
-        tmp_path, [_entry(pdf_url, "Doc"), _entry(bad_url, "Old title")], fetcher, monkeypatch
-    )
+    pipeline = _pipeline(tmp_path, [_entry(pdf_url, "Doc"), _entry(bad_url, "Old title")], fetcher)
     result = pipeline.sync()
     assert result["failed"] == 1
     assert result["pdfs"] == 1
@@ -309,14 +286,12 @@ def test_pdf_bytes_unchanged_and_metadata_retained_on_failure(
     assert bad_row["fetch_error"] == "denied"
 
 
-def test_fetched_entry_keeps_content_when_brave_metadata_changes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_fetched_entry_keeps_content_when_brave_metadata_changes(tmp_path: Path) -> None:
     url = "https://example.com/known"
     fetcher = _ScriptFetcher({url: [_page_outcome(url, "original")]})
-    pipeline = _pipeline(tmp_path, [_entry(url, "Old title")], fetcher, monkeypatch)
+    pipeline = _pipeline(tmp_path, [_entry(url, "Old title")], fetcher)
     assert pipeline.sync()["fetched"] == 1
-    pipeline.state["entries"] = [_entry(url, "New title")]  # type: ignore[attr-defined]
+    write_export(pipeline.settings.brave_export_path, [_entry(url, "New title")])
     fetcher.calls.clear()
     second = pipeline.sync()
     assert second["fetched"] == 0
@@ -327,12 +302,10 @@ def test_fetched_entry_keeps_content_when_brave_metadata_changes(
     assert row["attempts"] == 1
 
 
-def test_bronze_replay_rebuilds_saved_items(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_bronze_replay_rebuilds_saved_items(tmp_path: Path) -> None:
     url = "https://example.com/replay"
     fetcher = _ScriptFetcher({url: [_page_outcome(url, "replay text")]})
-    pipeline = _pipeline(tmp_path, [_entry(url, "Replay title")], fetcher, monkeypatch)
+    pipeline = _pipeline(tmp_path, [_entry(url, "Replay title")], fetcher)
     assert pipeline.sync()["fetched"] == 1
     database = Database(pipeline.settings.database_path)
     with database.transaction() as connection:

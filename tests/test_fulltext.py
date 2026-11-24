@@ -8,7 +8,7 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 
 from x_digest import cli, saved_pipeline
-from x_digest.brave import BraveEntry
+from x_digest.brave import write_export
 from x_digest.config import Settings
 from x_digest.gold import GoldStore
 from x_digest.paths import resolve_stored_path
@@ -29,11 +29,17 @@ xlink:href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</license></p
 </article></pmc-articleset>"""
 
 
-def _entry(url: str) -> BraveEntry:
-    return BraveEntry(url, url, "Saved article", url, 100, 200, 0, "unread", "Default")
+def _entry(url: str) -> dict[str, object]:
+    return {
+        "url": url,
+        "title": "Saved article",
+        "hasBeenRead": False,
+        "creationTime": 100,
+        "lastUpdateTime": 200,
+    }
 
 
-def _scenario(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str):
+def _scenario(tmp_path: Path, mode: str):
     settings = Settings(
         _env_file=None,
         vault_path=tmp_path,
@@ -75,23 +81,15 @@ def _scenario(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str):
     def no_donsetch(*_args):
         pytest.fail("Scholarly API routing must not invoke webpage extraction")
 
-    monkeypatch.setattr(saved_pipeline.brave, "find_brave_db", lambda *_args: tmp_path)
-    pipeline = saved_pipeline.SavedPipeline(settings)
-
-    def snapshot(*_args):
-        directory = tmp_path / "browser-snapshot"
-        directory.mkdir()
-        return directory
-
-    pipeline.snapshot_fn = snapshot
-    pipeline.read_fn = lambda *_args: (
+    write_export(
+        settings.brave_export_path,
         [
             _entry(URL),
             _entry("https://x.com/user/status/123"),
             _entry("https://www.reddit.com/r/test/"),
         ],
-        {"entries": 3},
     )
+    pipeline = saved_pipeline.SavedPipeline(settings)
     pipeline.fetcher = SavedFetcher(settings, probe_fn=probe, donsetch_fn=no_donsetch)
     return pipeline, calls
 
@@ -113,7 +111,7 @@ def test_full_paper_is_separate_unchanged_and_rebuildable(
     capsys: pytest.CaptureFixture,
 ) -> None:
     original, mime = PMC_XML, "application/xml"
-    pipeline, calls = _scenario(tmp_path, monkeypatch, "xml")
+    pipeline, calls = _scenario(tmp_path, "xml")
     first = pipeline.sync()
     source, paper = _state(pipeline)
     assert first["fulltext_downloaded"] == 1
@@ -153,11 +151,10 @@ def test_full_paper_is_separate_unchanged_and_rebuildable(
 )
 def test_abstract_survives_missing_or_invalid_full_text(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
     mode,
     state,
 ) -> None:
-    pipeline, calls = _scenario(tmp_path, monkeypatch, mode)
+    pipeline, calls = _scenario(tmp_path, mode)
     first = pipeline.sync()
     source, paper = _state(pipeline)
     assert source["fetch_state"] == "fetched"

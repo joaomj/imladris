@@ -7,12 +7,12 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from . import brave
 from .config import Settings
 from .db import Database
 
 BACKUP_STAMP_NAME = "backup.last-success"
 DIGEST_EVENTS = ("digest_sent", "digest_failed", "digest_partial")
-SNAPSHOT_EVENTS = ("snapshot_archived", "snapshot_deduped")
 DETAIL_CHARS = 300
 
 
@@ -216,27 +216,18 @@ class HealthCheck:
         return []
 
     def _saved(self, now: datetime) -> list[Finding]:
-        """Flag a Brave reading list that has not been read for the whole cadence."""
-        placeholders = ",".join("?" for _ in SNAPSHOT_EVENTS)
-        with self.database.connect() as connection:
-            row = connection.execute(
-                f"""SELECT occurred_at FROM run_events
-                    WHERE event IN ({placeholders})
-                    ORDER BY occurred_at DESC LIMIT 1""",
-                SNAPSHOT_EVENTS,
-            ).fetchone()
-        if row is None:
+        """Flag a reading-list export the Brave extension has not refreshed for the cadence."""
+        try:
+            exported_at = brave.read_export_time(self.settings.brave_export_path)
+        except brave.BraveExportError:
             return []
-        read_at = _parse_timestamp(row["occurred_at"])
-        if read_at is None:
-            return []
-        age = now - read_at
-        if age > timedelta(days=self.settings.health_max_age_days):
+        if now - exported_at > timedelta(days=self.settings.health_max_age_days):
             return [
                 Finding(
                     "saved_stale",
-                    f"latest Brave reading-list read finished {row['occurred_at']}, more than "
-                    f"{self.settings.health_max_age_days} days ago",
+                    f"Brave last exported the reading list at {exported_at.isoformat()}, more "
+                    f"than {self.settings.health_max_age_days} days ago; open Brave and check "
+                    "that the Imladris extension is enabled",
                 )
             ]
         return []

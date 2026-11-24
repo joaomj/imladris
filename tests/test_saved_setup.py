@@ -22,10 +22,6 @@ def test_missing_extractor_stops_before_brave_read(tmp_path: Path) -> None:
             "VALUES ('https://example.org/a','2026-01-01','2026-01-01',1)"
         )
 
-    def unexpected_snapshot(*_args):
-        pytest.fail("Brave must not be read when extractor setup is invalid")
-
-    pipeline.snapshot_fn = unexpected_snapshot
     with pytest.raises(saved_fetch.SavedFetchError, match="XDIGEST_DONSETCH_BIN"):
         pipeline.sync()
     with pipeline.database.connect() as connection:

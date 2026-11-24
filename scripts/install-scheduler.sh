@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install or remove the weekly X Digest sync as a launchd LaunchAgent.
+# Install or remove the weekly X and Brave reading-list sync as a launchd LaunchAgent.
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -32,8 +32,6 @@ if [[ -n "${1:-}" ]]; then
     usage
     exit 2
 fi
-# The agent runs the project interpreter directly, so Full Disk Access can be
-# granted to that one binary instead of the whole shell.
 if [[ ! -x "$VENV_PYTHON" ]]; then
     echo "python interpreter not found: $VENV_PYTHON" >&2
     echo "Run 'uv sync' in $PROJECT_DIR first." >&2
@@ -87,4 +85,4 @@ EOF
 
 launchctl bootout "gui/$(id -u)" "$PLIST" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
-echo "installed ${LABEL}: X collection every Sunday at 06:00, or at the next start when missed"
+echo "installed ${LABEL}: X and Brave collection every Sunday at 06:00, or at the next start when missed"

@@ -1,0 +1,5 @@
+#!/bin/sh
+# Native messaging host that Brave starts for the Imladris extension.
+# Brave runs it with its own environment, so it uses the project interpreter.
+cd "$(dirname "$0")/.." || exit 1
+exec .venv/bin/python -m x_digest.brave_host

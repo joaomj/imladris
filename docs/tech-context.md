@@ -224,21 +224,26 @@ The full Article body is currently extracted from `article.plain_text`.
 ### 2.4 Brave Reading List collection
 
 Run `uv run x-digest brave-sync`. X authorization is not required.
-Install Donsetch separately. The project depends on the pure-Python
-`chromium-reader==0.1.1`; no system LevelDB or Snappy installation is required.
+Install Donsetch separately.
 Donsetch is resolved from `PATH`, then `~/.local/bin/donsetch`, or the configured
 executable. Preflight failure does not consume item retries.
 
-The pipeline acquires the shared lock, copies the profile LevelDB files, and
-retries an unstable copy within the configured bound. The reader honors the
-manifest, active tables and logs, sequence numbers, and tombstones. It reads
-all Reading List entries regardless of read status. It never opens the live
-files as a database or changes Brave settings, entries, or read status. Brave
-can remain open. Malformed records and unstable copies cause explicit errors.
+The extension in `extension/` calls `chrome.readingList.query` and sends the
+full list to the native messaging host `com.imladris.reading_list`
+(`scripts/brave-reading-list-host`, which runs `x_digest.brave_host`). The host
+validates the entries and replaces `data/state/brave-reading-list.json`
+atomically with the entries and an `exported_at` time; a malformed message is
+rejected and the previous export stays. The extension pins its ID with the
+`key` in its manifest, and `scripts/install-brave-extension.sh` registers the
+host for that ID only. On macOS, Brave reads user-level host manifests from
+`~/Library/Application Support/Google/Chrome/NativeMessagingHosts`, not from its
+own directory (brave-core `app/brave_main_delegate.cc`).
 
-`--profile` selects the profile; the fallback is `Default`. `--db-path` overrides
-`~/Library/Application Support/BraveSoftware/Brave-Browser/<profile>/Sync Data/LevelDB`.
-The temporary copy is removed after reading.
+The pipeline acquires the shared lock and reads the export. The API reports
+read or unread only, stored as `brave_status` 1 or 0, with times in
+milliseconds stored as microseconds; `entry_id` stores the URL, which is the
+Reading List key. `--profile` sets the label stored with the entries; the
+fallback is `Default`.
 
 The URL-list snapshot reaches Bronze before content requests. An unchanged
 snapshot hash is deduplicated. URL-keyed saved records retain completed content
@@ -268,7 +273,7 @@ does not clear a failed download of the original saved PDF.
 
 | Modules | Responsibility |
 | --- | --- |
-| `brave.py`, `brave_leveldb.py` | Stable copy and strict Reading List decoding. |
+| `brave.py`, `brave_host.py` | Reading-list export validation and the native messaging host. |
 | `saved_pipeline.py` | Snapshot-first collection and run state. |
 | `saved_fetch.py`, `pubmed.py` | Webpage, PDF, and exact PubMed record retrieval. |
 | `saved_store.py`, `saved_urls.py` | Catalog, search, replay, and exclusions. |
@@ -644,9 +649,7 @@ limits when `Settings` loads.
 
 | Environment variable | Default | Purpose |
 | --- | --- | --- |
-| `XDIGEST_BRAVE_PROFILE` | `Default` fallback | Profile directory name. |
-| `XDIGEST_BRAVE_DB_PATH` | None | Override LevelDB directory. |
-| `XDIGEST_BRAVE_SNAPSHOT_RETRIES` | `5` | Stable-copy retries, 0 to 5. |
+| `XDIGEST_BRAVE_PROFILE` | `Default` fallback | Profile label stored with entries. |
 | `XDIGEST_DONSETCH_BIN` | `donsetch` | Extraction executable. |
 | `XDIGEST_DONSETCH_TIMEOUT_SECONDS` | `150.0` | Subprocess timeout, greater than 0 and at most 600. |
 | `XDIGEST_DONSETCH_DEADLINE_MS` | `120000` | Extraction deadline, 500 to 600000 milliseconds. |
@@ -1419,17 +1422,13 @@ run is retried hourly. When the newest digest event is a failure, the script als
 `.venv/bin/python`, so the job does not depend on the shell environment. Remove it with
 `scripts/install-scheduler.sh --remove`.
 
-The Brave reading list runs from `scripts/weekly-shell-trigger.sh`, which
-starts from the first interactive shell of each ISO week. Brave's LevelDB store
-sits behind Full Disk Access, a permission macOS grants to an application: the
-terminal holds it, a launchd job does not. Running the stage in the shell's own
-process tree keeps the permission, and a backgrounded child keeps it after the
-shell exits. The trigger stamps every line of stage output into
-`data/logs/weekly-trigger.log` and starts the backup agent afterwards.
+The same script also runs `brave-sync` with its own stamp,
+`data/logs/brave-sync.last-success`, so a failed Brave collection retries hourly
+without repeating a successful X sync. The collection reads the extension's
+export and needs no macOS privacy permission.
 
-Both paths keep one timestamp per output line, so a traceback from an earlier
-run cannot be read as current. `x_digest/__main__.py` exists so the trigger can
-run the installed package as `python -m x_digest brave-sync`. Sequential
+`x_digest/__main__.py` exists so the scripts can run the installed package as
+`python -m x_digest`. Sequential
 execution respects the shared lock. The working directory is the project root.
 X uses the token in `state_dir`; Brave uses `XDIGEST_BRAVE_PROFILE` or
 `Default`. Run `uv sync` before installing or upgrading.
@@ -1445,17 +1444,7 @@ reinstall keeps the `pass-cli` environment the credential reads depend on.
 Re-run the installer to replace an existing X-only job. The label and log paths
 stay unchanged. `RunAtLoad=false` prevents immediate collection on installation
 or login. Updating code alone does not replace an installed plist. Donsetch must
-be available to the same macOS user. Launchd needs permission to read Brave;
-a successful Terminal run does not verify that permission.
-
-The optional `scripts/zshrc-init.sh` hook calls `scripts/weekly-shell-trigger.sh`.
-Set `XDIGEST_PROJECT_DIR` to the absolute checkout path in `~/.zshrc`, then
-source the hook to enable it. The tracked hook contains no checkout path.
-The first shell each ISO week
-starts collection after 1800 seconds. The trigger checks launchd state before
-starting backup and skips backup on inspection failure or a 30-minute timeout.
-The stamp and trigger log are in `data/logs/`. The stamp records dispatch, not
-successful collection, and does not suppress the separate calendar run.
+be available to the same macOS user.
 
 A second LaunchAgent runs the Google Cloud Storage backup every Sunday at
 06:15, 10:15, 14:15, and 18:15, after the sync agent. It is installed with

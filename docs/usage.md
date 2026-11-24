@@ -112,14 +112,26 @@ Install [Donsetch](https://github.com/dondai44423/donsetch) for webpage extracti
 The command checks `PATH`, then `~/.local/bin/donsetch` for a user-local installation.
 Set `XDIGEST_DONSETCH_BIN` to select a different executable. A missing executable
 stops the run before reading Brave or consuming any item retries.
-The project depends on one pure-Python LevelDB reader; no system
-LevelDB or Snappy installation is required.
+A small Brave extension in `extension/` exports the list through Chromium's
+`chrome.readingList` API to a native messaging host, which writes
+`data/state/brave-reading-list.json`. The collection reads that file, so it
+needs no macOS privacy permission. Set it up once on the Mac that runs the
+project:
+
+```bash
+./scripts/install-brave-extension.sh
+```
+
+Then open `brave://extensions`, turn on Developer mode, choose Load unpacked,
+and select the `extension/` directory. The extension exports the list when it
+loads, when Brave starts, on every change, and once a day while Brave runs.
+Entries saved on other devices arrive through Brave Sync while desktop Brave is
+open.
 
 ```bash
 uv run x-digest brave-sync --profile Default
 ```
 
-Use `--db-path` to override the profile's `Sync Data/LevelDB` directory.
 Browse the local saved-content catalog without contacting websites:
 
 ```bash
@@ -131,11 +143,8 @@ uv run x-digest saved-export --format json
 `verify --full` includes archived PDFs and PMC XML. `rebuild-silver` also replays saved-content
 Bronze records. PDFs are searchable by saved title and URL, not by PDF text.
 
-The reader copies only the profile's LevelDB files into a temporary directory.
-It never opens the original files as a database or changes Brave settings or entries.
-Brave can remain open. The reader retries if the files change during copying;
-if it cannot obtain a stable copy, it reports an error.
-On macOS, the process that runs the command needs permission to read Brave's data.
+The command reads only the export file. It never opens Brave's profile or changes
+Brave settings, entries, or read status. A missing or malformed export fails the run.
 
 The workflow saves the URL-list snapshot in Bronze before fetching content:
 

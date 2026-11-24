@@ -183,8 +183,6 @@ class Settings(BaseSettings):
     digest_max_chars_per_post: int = Field(default=800, ge=100, le=4000)
     digest_prompt_max_chars: int = Field(default=12000, ge=2000, le=100000)
     brave_profile: str | None = None
-    brave_db_path: Path | None = None
-    brave_snapshot_retries: int = Field(default=5, ge=0, le=5)
     donsetch_bin: str = "donsetch"
     donsetch_timeout_seconds: float = Field(default=150.0, gt=0, le=600)
     donsetch_deadline_ms: int = Field(default=120000, ge=500, le=600000)
@@ -249,6 +247,11 @@ class Settings(BaseSettings):
     def log_path(self) -> Path:
         """Return the structured application log path."""
         return self.vault_path / "logs" / "application.jsonl"
+
+    @property
+    def brave_export_path(self) -> Path:
+        """Return the reading-list file the Brave extension's host writes."""
+        return self.vault_path / "state" / "brave-reading-list.json"
 
     @property
     def lock_path(self) -> Path:

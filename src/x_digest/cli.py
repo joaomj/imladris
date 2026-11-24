@@ -12,7 +12,7 @@ from pydantic import ValidationError
 from requests import RequestException
 
 from .auth import AuthError, authorization_url, exchange_callback
-from .brave import BraveReaderError
+from .brave import BraveExportError
 from .config import load_settings
 from .db import Database
 from .digest import DigestBuilder, DigestStore
@@ -55,10 +55,9 @@ def _print_error(error: Exception) -> int:
 def _add_saved_commands(commands: Any) -> None:
     """Register Brave saved-content commands on the subparser collection."""
     brave_sync = commands.add_parser(
-        "brave-sync", help="snapshot the Brave reading list and fetch saved content"
+        "brave-sync", help="archive the exported Brave reading list and fetch saved content"
     )
-    brave_sync.add_argument("--profile", default=None, help="Brave profile name")
-    brave_sync.add_argument("--db-path", type=Path, default=None)
+    brave_sync.add_argument("--profile", default=None, help="profile label stored with the entries")
     saved_search = commands.add_parser("saved-search", help="search saved content")
     saved_search.add_argument("query")
     saved_search.add_argument("--limit", type=int, default=20)
@@ -306,9 +305,7 @@ def _handle_live(args: argparse.Namespace, settings: Any, correlation_id: str) -
 def _handle_saved_sync(args: argparse.Namespace, settings: Any, correlation_id: str) -> int:
     log = _logger_for(settings)
     log.emit(correlation_id, "command_started", "debug", command="brave-sync")
-    result = SavedPipeline(settings, correlation_id=correlation_id).sync(
-        profile=args.profile, db_path=args.db_path
-    )
+    result = SavedPipeline(settings, correlation_id=correlation_id).sync(profile=args.profile)
     log.emit(correlation_id, "command_completed", "info", command="brave-sync", result=result)
     _print(result)
     return 0
@@ -520,7 +517,7 @@ def main(argv: list[str] | None = None) -> int:
         return handlers.get(args.command, _handle_gold)(args, settings, correlation_id)
     except (
         AuthError,
-        BraveReaderError,
+        BraveExportError,
         LockAlreadyHeld,
         OSError,
         RequestException,

@@ -1,7 +1,7 @@
-"""Brave saved-content pipeline: snapshot the reading list, then fetch.
+"""Brave saved-content pipeline: archive the reading list, then fetch.
 
-Runs without X authorization. Takes a stable LevelDB snapshot, decodes all
-entries regardless of read status, persists the snapshot to Bronze, upserts
+Runs without X authorization. Reads the extension's reading-list export with
+all entries regardless of read status, persists it to Bronze, upserts
 ``saved_items`` metadata, and fetches only pending or retryable URLs.
 Fetched entries are never refetched; failures retry up to the configured
 attempt bound while preserving prior metadata and content.
@@ -9,10 +9,8 @@ attempt bound while preserving prior metadata and content.
 
 import hashlib
 import json
-import shutil
 import uuid
 from dataclasses import replace
-from pathlib import Path
 from typing import Any
 
 from . import brave
@@ -56,7 +54,7 @@ KIND_ENDPOINTS = {
 
 
 class SavedPipeline:
-    """Coordinate Brave snapshot, Bronze writes, and content fetching."""
+    """Coordinate the reading-list export, Bronze writes, and content fetching."""
 
     def __init__(
         self,
@@ -74,9 +72,7 @@ class SavedPipeline:
         self.log = log or JsonlLogger(
             settings.log_path, settings.log_level, settings.log_max_bytes, settings.log_backups
         )
-        # Test hooks: tests assign snapshot_fn, read_fn, and fetcher directly.
-        self.snapshot_fn = brave.snapshot_leveldb
-        self.read_fn = brave.read_entries
+        # Test hook: tests assign a fake fetcher directly.
         self.fetcher: SavedFetcher | None = None
         self._sequence: dict[str, int] = {}
 
@@ -160,11 +156,10 @@ class SavedPipeline:
     def _media_key(url: str) -> str:
         return f"saved-{hashlib.sha256(url.encode('utf-8')).hexdigest()[:32]}"
 
-    def sync(self, profile: str | None = None, db_path: Path | str | None = None) -> dict[str, Any]:
-        """Snapshot the reading list and fetch due content once."""
+    def sync(self, profile: str | None = None) -> dict[str, Any]:
+        """Archive the exported reading list and fetch due content once."""
         fetcher = self._fetcher_for()
         active_profile = profile or self.settings.brave_profile or "Default"
-        explicit = Path(db_path).expanduser() if db_path else self.settings.brave_db_path
         run_id = self._start_run()
         counts: dict[str, int] = {
             "entries": 0,
@@ -179,15 +174,16 @@ class SavedPipeline:
         }
         try:
             with ProcessLock(self.settings.lock_path):
-                source = brave.find_brave_db(explicit, active_profile)
-                self._event(run_id, "extract", "brave_db_resolved", profile=active_profile)
-                snapshot_dir: Path | None = None
-                try:
-                    snapshot_dir = self.snapshot_fn(source, self.settings.brave_snapshot_retries)
-                    entries, read_counts = self.read_fn(snapshot_dir, active_profile)
-                finally:
-                    if snapshot_dir is not None:
-                        shutil.rmtree(snapshot_dir)
+                entries, exported_at = brave.read_export(
+                    self.settings.brave_export_path, active_profile
+                )
+                self._event(
+                    run_id,
+                    "extract",
+                    "brave_export_read",
+                    profile=active_profile,
+                    exported_at=exported_at.isoformat(),
+                )
                 counts["entries"] = len(entries)
                 digest = snapshot_hash(entries)
                 stored = self.database.get_checkpoint(checkpoint_key(active_profile))
@@ -202,7 +198,9 @@ class SavedPipeline:
                         entries=len(entries),
                     )
                 else:
-                    payload = snapshot_payload(entries, active_profile, digest, read_counts)
+                    payload = snapshot_payload(
+                        entries, active_profile, digest, {"exported_at": exported_at.isoformat()}
+                    )
                     self._write_json(
                         run_id,
                         SNAPSHOT_KIND,

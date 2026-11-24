@@ -1,0 +1,9 @@
+{
+  "manifest_version": 3,
+  "name": "Imladris reading list export",
+  "description": "Sends the Brave reading list to the local Imladris checkout.",
+  "version": "1.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvQR+aLWp6raL61bruzj8J5VZwCemDSaXkOef1DNGCPqIBe5GOtWIjX9UO3aKrKCN8ZyrfKO93YUWNXEFxtK+JN+a+78BN6v/DZ5OJRH+2f4R1ypcq/rW3MbDieV+rhy1V4Dr4nCumkPQkqGMjHOVILQclhR3ArIRLjQ9Dmw2Y6bPpxjOQvIJD+P/C5ZVTkck0r9dtILwJUlu4qZiqaXYp8W7sGR2n7ubwVKYAIaPB0mab0SGAvIztv7kfmyiFNbLxkiUGh8G/SbCmR5bs0f134wSaMwgrpflAzZy5eOlPVTjcBmVY9XZW8h8XIWa9gYYbElOn5KVg2MnWJAOkzQQTQIDAQAB",
+  "permissions": ["readingList", "nativeMessaging", "alarms"],
+  "background": { "service_worker": "background.js" }
+}

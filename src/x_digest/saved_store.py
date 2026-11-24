@@ -63,35 +63,18 @@ def checkpoint_key(profile: str) -> str:
 def entry_dict(entry: BraveEntry) -> dict[str, Any]:
     """Return the replay-friendly dict for one Brave entry."""
     return {
-        "key": entry.key,
-        "entry_id": entry.entry_id,
         "title": entry.title,
         "url": entry.url,
         "creation_us": entry.creation_us,
         "update_us": entry.update_us,
         "status": entry.status,
-        "status_text": entry.status_text,
         "profile": entry.profile,
     }
 
 
 def snapshot_hash(entries: list[BraveEntry]) -> str:
     """Hash the canonical snapshot so unchanged lists dedup exactly."""
-    canonical = sorted(
-        (
-            {
-                "entry_id": entry.entry_id,
-                "title": entry.title,
-                "url": entry.url,
-                "creation_us": entry.creation_us,
-                "update_us": entry.update_us,
-                "status": entry.status,
-                "profile": entry.profile,
-            }
-            for entry in entries
-        ),
-        key=lambda item: (item["url"], item["entry_id"]),
-    )
+    canonical = sorted((entry_dict(entry) for entry in entries), key=lambda item: item["url"])
     serialized = json.dumps(canonical, sort_keys=True, ensure_ascii=False, default=str).encode()
     return hashlib.sha256(serialized).hexdigest()
 
@@ -178,7 +161,7 @@ def upsert_entries(
                     last_seen_at=excluded.last_seen_at""",
                 (
                     entry.url,
-                    entry.entry_id,
+                    entry.url,
                     entry.title,
                     entry.creation_us,
                     entry.update_us,
@@ -362,7 +345,7 @@ def _replay_snapshot(database: Database, payload: dict[str, Any]) -> None:
                     last_seen_at=excluded.last_seen_at""",
                 (
                     str(item["url"]),
-                    str(item.get("entry_id") or "") or None,
+                    str(item["url"]),
                     str(item.get("title") or "") or None,
                     item.get("creation_us"),
                     item.get("update_us"),

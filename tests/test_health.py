@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from x_digest.brave import write_export
 from x_digest.config import Settings
 from x_digest.db import Database
 from x_digest.health import HealthCheck
@@ -43,14 +44,15 @@ def _codes(settings: Settings, database: Database, now: datetime) -> list[str]:
     return [finding["code"] for finding in report["findings"]]
 
 
-def test_stale_reading_list_read_is_reported(tmp_path: Path) -> None:
+def test_stale_reading_list_export_is_reported(tmp_path: Path) -> None:
     settings = Settings(vault_path=tmp_path)  # type: ignore[arg-type]
     database = Database(settings.database_path)
     database.initialize()
     now = datetime.now(UTC)
-    _record_snapshot(database, "old", now - timedelta(days=settings.health_max_age_days + 1))
+    old = now - timedelta(days=settings.health_max_age_days + 1)
+    write_export(settings.brave_export_path, [], old)
     assert "saved_stale" in _codes(settings, database, now)
-    _record_snapshot(database, "new", now)
+    write_export(settings.brave_export_path, [], now)
     assert "saved_stale" not in _codes(settings, database, now)
 
 

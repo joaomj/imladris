@@ -9,7 +9,6 @@ dependencies = [
     "oauthlib>=3.3.1",
     "pydantic-settings>=2.14.2",
     "requests>=2.34.2",
-    "chromium-reader==0.1.1",
     "xdk>=0.10.0",
 ]
 

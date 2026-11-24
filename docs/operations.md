@@ -8,23 +8,32 @@ a schedule. Run commands from the repository root.
 Two mechanisms cover the two sources. A launchd agent collects X bookmarks
 every Sunday at 06:00. When the Mac is off at that time, or the run fails, the
 agent runs it at the next login and then retries hourly until it succeeds. A
-failed digest delivery is also retried hourly. The Brave reading list is collected from an interactive
-shell, because its LevelDB store sits behind macOS Full Disk Access, which a
-terminal application holds and a launchd job does not. GCS backup runs every
+failed digest delivery is also retried hourly. The same agent collects the
+Brave reading list from the extension's export, with its own success stamp, so
+a failure in one source does not block the other. GCS backup runs every
 Sunday at 06:15, 10:15, 14:15, and 18:15, and a daily problem report at 07:00.
 
-Brave uses `XDIGEST_BRAVE_PROFILE` or `Default`; Donsetch must be installed for
-the same macOS user. The shell that runs the collection must be able to read
-Brave's profile. Confirm it before relying on the schedule:
+A small Brave extension in `extension/` exports the list through Chromium's
+`chrome.readingList` API to a native messaging host, which writes
+`data/state/brave-reading-list.json`. The collection reads that file, so it
+needs no macOS privacy permission. Set it up once on the Mac that runs the
+project:
+
+```bash
+./scripts/install-brave-extension.sh
+```
+
+Then open `brave://extensions`, turn on Developer mode, choose Load unpacked,
+and select the `extension/` directory. The extension exports the list when it
+loads, when Brave starts, on every change, and once a day while Brave runs.
+Entries saved on other devices arrive through Brave Sync while desktop Brave is
+open.
+
+Confirm the collection before relying on the schedule:
 
 ```bash
 uv run x-digest brave-sync
 ```
-
-Run that once before installing. If it fails with `Operation not permitted`,
-grant Full Disk Access to the terminal application you run it from in System
-Settings, Privacy & Security, Full Disk Access. Granting it to the terminal is
-what makes the scheduled shell run work; no launchd job reads Brave's files.
 
 Sync the environment, then install the agents:
 
@@ -39,49 +48,14 @@ The X agent runs `x-digest sync` with the project interpreter. The backup
 waits while that job runs, up to 30 minutes, and skips an attempt once that
 day's copy has succeeded.
 
-The shell trigger collects the Brave reading list from the first interactive
-shell of each ISO week, after a 30-minute delay, then starts the backup. Point
-it at the checkout and source the hook in `~/.zshrc`:
-
-```sh
-XDIGEST_PROJECT_DIR="/absolute/path/to/imladris"
-. "$XDIGEST_PROJECT_DIR/scripts/zshrc-init.sh"
-```
-
-Keep this path in your local shell configuration. Do not edit the tracked hook
-for a specific computer. The scheduler installer does not add the shell hook.
-Progress lands in `data/logs/weekly-trigger.log` with a once-per-week stamp at
-`data/logs/weekly-shell-trigger.stamp`. A week with no interactive shell gets
-no Brave collection; the next shell that opens starts one. A failed collection
-clears the stamp, so the next shell retries it; each run logs the terminal
-application that started it.
-
-Remove an agent:
-
-```bash
-./scripts/install-scheduler.sh --remove
-./scripts/install-backup-scheduler.sh --remove
-./scripts/install-health-scheduler.sh --remove
-```
-
 Trigger the first X run immediately:
 
 ```bash
 launchctl kickstart "gui/$(id -u)/com.x-digest.sync"
 ```
 
-Trigger the Brave collection and backup without waiting for a new week by
-removing the stamp first:
-
-```bash
-rm data/logs/weekly-shell-trigger.stamp
-./scripts/weekly-shell-trigger.sh 0
-```
-
-Both paths write one timestamp per output line, so a traceback from an earlier
-run cannot be mistaken for today's. See
-[Deployment and release](tech-context.md#17-deployment-and-release) for the
-agent behavior.
+The agent writes each run's output to `data/logs/scheduler.out.log` and
+`data/logs/scheduler.err.log`.
 
 ## Daily problem report
 
@@ -101,7 +75,7 @@ It reports these findings:
 | `run_stalled` | A run is still marked `running` past `XDIGEST_HEALTH_STUCK_RUN_MINUTES` (default 120). |
 | `run_failed` | The latest run finished with status `failed`. |
 | `run_missing` | The latest run started more than `XDIGEST_HEALTH_MAX_AGE_DAYS` (default 8) days ago. |
-| `saved_stale` | The newest Brave reading-list read finished more than `XDIGEST_HEALTH_MAX_AGE_DAYS` days ago, so the shell trigger has not run. |
+| `saved_stale` | The Brave extension last exported the reading list more than `XDIGEST_HEALTH_MAX_AGE_DAYS` days ago, so Brave has not run or the extension is disabled. |
 | `digest_missing` | The newest digest event happened more than `XDIGEST_HEALTH_MAX_AGE_DAYS` days ago, so the weekly X sync has not delivered. |
 | `digest_incomplete` | The newest digest event is a failure or a partial delivery, not a sent digest. |
 | `backup_missing` | The backup log exists but no successful copy is recorded. |
