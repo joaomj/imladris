@@ -172,7 +172,8 @@ def exchange_callback(
                 category=type(error).__name__,
             )
             raise AuthError(
-                "Saving X credentials to Keychain failed; fix Keychain access and authorize again"
+                f"Saving X credentials to {store.token_path} failed; fix the state directory "
+                "and authorize again"
             ) from error
         log.emit(
             correlation_id,

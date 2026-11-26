@@ -2,9 +2,15 @@
 # Weekly X and Brave reading-list collection for launchd. Due every Sunday at
 # 06:00 local time. launchd starts it at login, at the scheduled time, and
 # hourly, so a week missed while the Mac was off or a failed attempt runs at
-# the next start, and a failed digest delivery is retried.
+# the next start, and a failed digest delivery is retried. Each job gets at
+# most MAX_ATTEMPTS attempts per week; the daily problem report names a job
+# that used them all. A run stops after one hour.
 # The file name is what macOS shows under Login Items.
+if [ -z "${XDIGEST_TIME_LIMITED:-}" ]; then
+    XDIGEST_TIME_LIMITED=1 exec /usr/bin/timeout -k 1m 1h "$0" "$@"
+fi
 cd "$(dirname "$0")/.." || exit 1
+MAX_ATTEMPTS=6
 
 # Start of the current due period: the latest Sunday 06:00 that has passed.
 days_back=$(date +%w)
@@ -13,12 +19,29 @@ if [ "$days_back" -eq 0 ] && [ "$(date +%H)" -lt 6 ]; then
 fi
 due=$(date -j -v-"${days_back}"d -v6H -v0M -v0S +%s)
 
-# Run one x_digest command unless it already succeeded this period.
-# Usage: run_due <stamp name> <command>
+# Attempts used this period. The file holds "<period start> <count>".
+attempts() {
+    if read -r period count 2>/dev/null < "data/logs/$1.attempts" && [ "$period" = "$due" ]; then
+        echo "$count"
+    else
+        echo 0
+    fi
+}
+
+# Count one attempt, or fail when this period's attempts are used up.
+take_attempt() {
+    used=$(attempts "$1")
+    [ "$used" -lt "$MAX_ATTEMPTS" ] || return 1
+    echo "$due $((used + 1))" > "data/logs/$1.attempts"
+}
+
+# Run one x_digest command unless it already succeeded this period or has no
+# attempts left. Usage: run_due <stamp name> <command>
 run_due() {
     stamp="data/logs/$1.last-success"
     last=$(cat "$stamp" 2>/dev/null || echo 0)
     [ "$last" -ge "$due" ] && return 0
+    take_attempt "$1" || return 0
     started=$(date +%s)
     .venv/bin/python -m x_digest "$2" || return $?
     echo "$started" > "$stamp"
@@ -29,8 +52,8 @@ run_due sync sync || status=$?
 run_due brave-sync brave-sync || status=$?
 
 # A sync can collect posts and still fail to deliver the digest. The batch
-# stays pending, so resend it until the newest digest event is a success.
-if .venv/bin/python -m x_digest health | grep -q '"digest_incomplete"'; then
+# stays pending, so resend it while the newest digest event is not a success.
+if .venv/bin/python -m x_digest health | grep -q '"digest_incomplete"' && take_attempt digest; then
     .venv/bin/python -m x_digest digest --send
 fi
 exit "$status"

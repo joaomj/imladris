@@ -1418,12 +1418,21 @@ hour. The script exits unless the latest Sunday 06:00 is newer than the start
 of the last successful sync, recorded in `data/logs/sync.last-success`. A week
 missed while the Mac was off therefore runs at the next login, and a failed
 run is retried hourly. When the newest digest event is a failure, the script also runs
-`digest --send` each hour to resend the pending batch. The script calls the project interpreter,
+`digest --send` each hour to resend the pending batch. Each of the three jobs gets
+at most 6 attempts per week, counted in `data/logs/<job>.attempts`, which holds
+the week start and the count. A job that used all attempts waits for the next
+week, and the daily `health` report names the failure. The script calls the project interpreter,
 `.venv/bin/python`, so the job does not depend on the shell environment. Remove it with
 `scripts/install-scheduler.sh --remove`.
 
+launchd has no run time limit, so each job script runs itself under
+`/usr/bin/timeout`: collection and backup stop after 1 hour, and the problem
+report after 10 minutes. The plists
+keep starting the scripts directly, so Login Items still shows their names.
+
 The same script also runs `brave-sync` with its own stamp,
-`data/logs/brave-sync.last-success`, so a failed Brave collection retries hourly
+`data/logs/brave-sync.last-success`, so a failed Brave collection retries hourly,
+within the same weekly cap,
 without repeating a successful X sync. The collection reads the extension's
 export and needs no macOS privacy permission.
 

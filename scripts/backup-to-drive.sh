@@ -2,6 +2,10 @@
 # Back up the local data/ directory to Google Cloud Storage with rclone.
 # Copy semantics: files are never deleted on the bucket.
 set -euo pipefail
+# A run stops after one hour, including the wait for collection.
+if [[ -z "${XDIGEST_TIME_LIMITED:-}" ]]; then
+    XDIGEST_TIME_LIMITED=1 exec /usr/bin/timeout -k 1m 1h /bin/bash "$0" "$@"
+fi
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Load .env if present so launchd gets XDIGEST_BACKUP_BUCKET without manual export.

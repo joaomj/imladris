@@ -11,7 +11,7 @@ from typing import Any
 from pydantic import ValidationError
 from requests import RequestException
 
-from .auth import AuthError, authorization_url, exchange_callback
+from .auth import AuthError, TokenStore, authorization_url, exchange_callback
 from .brave import BraveExportError
 from .config import load_settings
 from .db import Database
@@ -178,7 +178,7 @@ def _handle_auth(args: argparse.Namespace, settings: Any, correlation_id: str) -
     if args.callback_url:
         exchange_callback(settings, args.callback_url, log, correlation_id)
         log.emit(correlation_id, "token_exchanged", "info")
-        print("X authorization stored in the macOS Keychain.")
+        print(f"X authorization stored in {TokenStore(settings).token_path}.")
     else:
         print("Open this URL, authorize the app, then run auth again with the callback URL:")
         print(authorization_url(settings))

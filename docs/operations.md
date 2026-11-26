@@ -7,11 +7,15 @@ a schedule. Run commands from the repository root.
 
 Two mechanisms cover the two sources. A launchd agent collects X bookmarks
 every Sunday at 06:00. When the Mac is off at that time, or the run fails, the
-agent runs it at the next login and then retries hourly until it succeeds. A
-failed digest delivery is also retried hourly. The same agent collects the
+agent runs it at the next login and then retries hourly, at most 6 attempts
+per week. A failed digest delivery is also retried hourly, at most 6 times per
+week. After that the job waits for the next week, and the daily problem report
+names it; run the command by hand to retry sooner. The same agent collects the
 Brave reading list from the extension's export, with its own success stamp, so
 a failure in one source does not block the other. GCS backup runs every
 Sunday at 06:15, 10:15, 14:15, and 18:15, and a daily problem report at 07:00.
+A collection or backup run stops after 1 hour, and a problem report after 10
+minutes.
 
 A small Brave extension in `extension/` exports the list through Chromium's
 `chrome.readingList` API to a native messaging host, which writes
